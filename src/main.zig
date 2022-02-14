@@ -3,7 +3,7 @@ const glfw = @import("glfw");
 const vk = @import("vulkan");
 const builtin = @import("builtin");
 
-const isDebugModeEnabled: bool = builtin.mode == std.builtin.Mode.Debug;
+const is_debug_mode: bool = builtin.mode == std.builtin.Mode.Debug;
 
 pub fn main() !void {
     try glfw.init(.{});
@@ -34,47 +34,64 @@ const Allocator = std.mem.Allocator;
 const BaseDispatch = vk.BaseWrapper(.{
     .createInstance = true,
     .enumerateInstanceLayerProperties = true,
+    //.debug_utils_messenger_create_info_ext = true,
 });
 
 const InstanceDispatch = vk.InstanceWrapper(.{
     .destroyInstance = true,
     .destroySurfaceKHR = true,
+    .createDebugUtilsMessengerEXT = true,
+    .destroyDebugUtilsMessengerEXT = true,
 });
 
 const VkContext = struct {
     vki: InstanceDispatch,
     instance: vk.Instance,
+    debug_messenger: ?vk.DebugUtilsMessengerEXT,
     surface: vk.SurfaceKHR,
 
     fn init(allocator: Allocator, app_name: [*:0]const u8, window: glfw.Window) !VkContext {
         const vk_proc = @ptrCast(fn (instance: vk.Instance, procname: [*:0]const u8) callconv(.C) vk.PfnVoidFunction, glfw.getInstanceProcAddress);
         const base_dispatch = try BaseDispatch.load(vk_proc);
 
-        const required_layers = switch (isDebugModeEnabled) {
-            true => [_][]const u8{"VK_LAYER_KHRONOS_validation"},
-            false => [_][]const u8{},
+        const layers = switch (is_debug_mode) {
+            true => [_][:0]const u8{"VK_LAYER_KHRONOS_validation"},
+            false => [_][:0]const u8{},
         };
 
-        if (!try areLayersSupported(allocator, base_dispatch, &required_layers)) {
+        if (!try areLayersSupported(allocator, base_dispatch, &layers)) {
             return error.VkRequiredLayersNotSupported;
         }
 
-        const instance = try initInstance(base_dispatch, app_name, &required_layers);
-        const instance_dispatch = try InstanceDispatch.load(instance, vk_proc);
-        errdefer instance_dispatch.destroyInstance(instance, null);
+        const platform_extensions: [][*:0]const u8 = try glfw.getRequiredInstanceExtensions();
+        const debug_extensions = [_][*:0]const u8{"VK_EXT_debug_utils"};
+        const extensions: [][*:0]const u8 = try std.mem.concat(allocator, [*:0]const u8, &.{ platform_extensions, debug_extensions[0..] });
+        defer allocator.destroy(&extensions);
+
+        const instance = try initInstance(base_dispatch, app_name, layers[0..], extensions[0..]);
+        const vki = try InstanceDispatch.load(instance, vk_proc);
+        errdefer vki.destroyInstance(instance, null);
+
+        const debug_messenger: ?vk.DebugUtilsMessengerEXT = switch (is_debug_mode) {
+            true => try initDebugMessenger(vki, instance),
+            false => null,
+        };
+        errdefer if (is_debug_mode) vki.destroyDebugUtilsMessengerEXT(instance, debug_messenger.?, null);
 
         const surface = try initSurface(instance, window);
-        errdefer instance_dispatch.destroySurfaceKHR(instance, surface, null);
+        errdefer vki.destroySurfaceKHR(instance, surface, null);
 
         return VkContext{
-            .vki = instance_dispatch,
+            .vki = vki,
             .instance = instance,
+            .debug_messenger = debug_messenger,
             .surface = surface,
         };
     }
 
     fn deinit(self: VkContext) void {
         self.vki.destroySurfaceKHR(self.instance, self.surface, null);
+        if (self.debug_messenger) |debug_messenger| self.vki.destroyDebugUtilsMessengerEXT(self.instance, debug_messenger, null);
         self.vki.destroyInstance(self.instance, null);
     }
 };
@@ -101,9 +118,7 @@ fn areLayersSupported(allocator: Allocator, vkb: BaseDispatch, required_layers: 
     return matches == required_layers.len;
 }
 
-fn initInstance(vkb: BaseDispatch, app_name: [*:0]const u8, layers: []const []const u8) !vk.Instance {
-    const instance_extensions: [][*:0]const u8 = try glfw.getRequiredInstanceExtensions();
-
+fn initInstance(vkb: BaseDispatch, app_name: [*:0]const u8, layers: []const []const u8, extensions: []const [*:0]const u8) !vk.Instance {
     const app_info = vk.ApplicationInfo{ .p_application_name = app_name, .application_version = vk.makeApiVersion(0, 0, 0, 0), .p_engine_name = app_name, .engine_version = vk.makeApiVersion(0, 0, 0, 0), .api_version = vk.API_VERSION_1_2 };
 
     const instance_create_info = vk.InstanceCreateInfo{
@@ -111,8 +126,8 @@ fn initInstance(vkb: BaseDispatch, app_name: [*:0]const u8, layers: []const []co
         .p_application_info = &app_info,
         .enabled_layer_count = @intCast(u32, layers.len),
         .pp_enabled_layer_names = @ptrCast([*]const [*:0]const u8, layers.ptr),
-        .enabled_extension_count = @intCast(u32, instance_extensions.len),
-        .pp_enabled_extension_names = @ptrCast([*]const [*:0]const u8, instance_extensions.ptr),
+        .enabled_extension_count = @intCast(u32, extensions.len),
+        .pp_enabled_extension_names = @ptrCast([*]const [*:0]const u8, extensions.ptr),
     };
 
     const instance = try vkb.createInstance(&instance_create_info, null);
@@ -128,4 +143,43 @@ fn initSurface(instance: vk.Instance, window: glfw.Window) !vk.SurfaceKHR {
     }
 
     return surface;
+}
+
+fn debugMessengerCallback(
+    message_severity: vk.DebugUtilsMessageSeverityFlagsEXT.IntType,
+    message_types: vk.DebugUtilsMessageSeverityFlagsEXT.IntType,
+    p_callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT,
+    p_user_data: ?*anyopaque,
+) callconv(vk.vulkan_call_conv) vk.Bool32 {
+    _ = message_severity;
+    _ = message_types;
+    _ = p_callback_data;
+    _ = p_user_data;
+
+    if (p_callback_data) |callback_data| {
+        std.log.warn("debug message: {s}", .{callback_data.p_message});
+    }
+
+    return vk.FALSE;
+}
+
+fn initDebugMessenger(vki: InstanceDispatch, instance: vk.Instance) !?vk.DebugUtilsMessengerEXT {
+    const create_info = vk.DebugUtilsMessengerCreateInfoEXT{
+        .flags = .{},
+        .message_severity = .{
+            .verbose_bit_ext = true,
+            .info_bit_ext = true,
+            .warning_bit_ext = true,
+            .error_bit_ext = true,
+        },
+        .message_type = .{
+            .general_bit_ext = true,
+            .validation_bit_ext = true,
+            .performance_bit_ext = true,
+        },
+        .pfn_user_callback = debugMessengerCallback,
+        .p_user_data = null,
+    };
+
+    return try vki.createDebugUtilsMessengerEXT(instance, &create_info, null);
 }
