@@ -34,7 +34,6 @@ const Allocator = std.mem.Allocator;
 const BaseDispatch = vk.BaseWrapper(.{
     .createInstance = true,
     .enumerateInstanceLayerProperties = true,
-    //.debug_utils_messenger_create_info_ext = true,
 });
 
 const InstanceDispatch = vk.InstanceWrapper(.{
@@ -42,6 +41,11 @@ const InstanceDispatch = vk.InstanceWrapper(.{
     .destroySurfaceKHR = true,
     .createDebugUtilsMessengerEXT = true,
     .destroyDebugUtilsMessengerEXT = true,
+    .enumeratePhysicalDevices = true,
+    .getPhysicalDeviceProperties = true,
+    .enumerateDeviceExtensionProperties = true,
+    .getPhysicalDeviceSurfaceFormatsKHR = true,
+    .getPhysicalDeviceSurfacePresentModesKHR = true,
 });
 
 const VkContext = struct {
@@ -49,6 +53,7 @@ const VkContext = struct {
     instance: vk.Instance,
     debug_messenger: ?vk.DebugUtilsMessengerEXT,
     surface: vk.SurfaceKHR,
+    physical_device: vk.PhysicalDevice,
 
     fn init(allocator: Allocator, app_name: [*:0]const u8, window: glfw.Window) !VkContext {
         const vk_proc = @ptrCast(fn (instance: vk.Instance, procname: [*:0]const u8) callconv(.C) vk.PfnVoidFunction, glfw.getInstanceProcAddress);
@@ -64,11 +69,11 @@ const VkContext = struct {
         }
 
         const platform_extensions: [][*:0]const u8 = try glfw.getRequiredInstanceExtensions();
-        const debug_extensions = [_][*:0]const u8{"VK_EXT_debug_utils"};
-        const extensions: [][*:0]const u8 = try std.mem.concat(allocator, [*:0]const u8, &.{ platform_extensions, debug_extensions[0..] });
-        defer allocator.destroy(&extensions);
+        const debug_extensions = [_][*:0]const u8{vk.extension_info.ext_debug_utils.name};
+        const instance_extensions: [][*:0]const u8 = try std.mem.concat(allocator, [*:0]const u8, &.{ platform_extensions, debug_extensions[0..] });
+        defer allocator.free(instance_extensions);
 
-        const instance = try initInstance(base_dispatch, app_name, layers[0..], extensions[0..]);
+        const instance = try initInstance(base_dispatch, app_name, layers[0..], instance_extensions[0..]);
         const vki = try InstanceDispatch.load(instance, vk_proc);
         errdefer vki.destroyInstance(instance, null);
 
@@ -81,11 +86,15 @@ const VkContext = struct {
         const surface = try initSurface(instance, window);
         errdefer vki.destroySurfaceKHR(instance, surface, null);
 
+        const physical_device_extensions = [_][*:0]const u8{vk.extension_info.khr_swapchain.name};
+        const physical_device = try PhysicalDeviceSelector.selectPhysicalDevice(vki, instance, allocator, surface, physical_device_extensions[0..]);
+
         return VkContext{
             .vki = vki,
             .instance = instance,
             .debug_messenger = debug_messenger,
             .surface = surface,
+            .physical_device = physical_device,
         };
     }
 
@@ -167,7 +176,7 @@ fn initDebugMessenger(vki: InstanceDispatch, instance: vk.Instance) !?vk.DebugUt
     const create_info = vk.DebugUtilsMessengerCreateInfoEXT{
         .flags = .{},
         .message_severity = .{
-            .verbose_bit_ext = true,
+            // .verbose_bit_ext = true,
             .info_bit_ext = true,
             .warning_bit_ext = true,
             .error_bit_ext = true,
@@ -183,3 +192,91 @@ fn initDebugMessenger(vki: InstanceDispatch, instance: vk.Instance) !?vk.DebugUt
 
     return try vki.createDebugUtilsMessengerEXT(instance, &create_info, null);
 }
+
+const PhysicalDeviceSelector = struct {
+    fn selectPhysicalDevice(
+        vki: InstanceDispatch,
+        instance: vk.Instance,
+        allocator: Allocator,
+        surface: vk.SurfaceKHR,
+        required_extensions: []const [*:0]const u8,
+    ) !vk.PhysicalDevice {
+        var physical_device_count: u32 = undefined;
+        _ = try vki.enumeratePhysicalDevices(instance, &physical_device_count, null);
+
+        const physical_devices = try allocator.alloc(vk.PhysicalDevice, physical_device_count);
+        defer allocator.free(physical_devices);
+
+        _ = try vki.enumeratePhysicalDevices(instance, &physical_device_count, physical_devices.ptr);
+
+        var highest_suitability_rating: i32 = -1;
+        var highest_suitabliity_rating_index: usize = 0;
+
+        for (physical_devices) |pd, index| {
+            if (!try areExtensionsSupported(vki, pd, allocator, required_extensions)) {
+                continue;
+            }
+
+            if (!try hasSurfaceSupport(vki, pd, surface)) {
+                continue;
+            }
+
+            const props = vki.getPhysicalDeviceProperties(pd);
+
+            const suitability_rating: i32 = switch (props.device_type) {
+                .virtual_gpu => 0,
+                .integrated_gpu => 1,
+                .discrete_gpu => 2,
+                else => -1,
+            };
+
+            if (suitability_rating > highest_suitability_rating) {
+                highest_suitability_rating = suitability_rating;
+                highest_suitabliity_rating_index = index;
+            }
+        }
+
+        if (highest_suitability_rating < 0) {
+            return error.NoSuitableDevice;
+        }
+
+        const selected_pd = physical_devices[highest_suitabliity_rating_index];
+        std.log.info("Using physical device: {s}", .{vki.getPhysicalDeviceProperties(selected_pd).device_name});
+        return selected_pd;
+    }
+
+    fn areExtensionsSupported(vki: InstanceDispatch, pd: vk.PhysicalDevice, allocator: Allocator, extensions: []const [*:0]const u8) !bool {
+        // enumerate extensions
+        var ext_prop_count: u32 = undefined;
+        _ = try vki.enumerateDeviceExtensionProperties(pd, null, &ext_prop_count, null);
+
+        const pd_ext_props = try allocator.alloc(vk.ExtensionProperties, ext_prop_count);
+        defer allocator.free(pd_ext_props);
+        _ = try vki.enumerateDeviceExtensionProperties(pd, null, &ext_prop_count, pd_ext_props.ptr);
+
+        // check if required extensions are in the physical device's list of supported extensions
+        for (extensions) |required_ext_name| {
+            for (pd_ext_props) |pd_ext| {
+                const pd_ext_name = @ptrCast([*:0]const u8, &pd_ext.extension_name);
+
+                if (std.mem.eql(u8, std.mem.span(required_ext_name), std.mem.span(pd_ext_name))) {
+                    break;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    fn hasSurfaceSupport(vki: InstanceDispatch, pd: vk.PhysicalDevice, surface: vk.SurfaceKHR) !bool {
+        var format_count: u32 = undefined;
+        _ = try vki.getPhysicalDeviceSurfaceFormatsKHR(pd, surface, &format_count, null);
+
+        var present_mode_count: u32 = undefined;
+        _ = try vki.getPhysicalDeviceSurfacePresentModesKHR(pd, surface, &present_mode_count, null);
+
+        return format_count > 0 and present_mode_count > 0;
+    }
+};
