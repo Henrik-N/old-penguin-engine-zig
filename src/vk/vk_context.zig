@@ -23,6 +23,7 @@ const InstanceDispatch = vk.InstanceWrapper(.{
     .getPhysicalDeviceSurfaceFormatsKHR = true,
     .getPhysicalDeviceSurfaceSupportKHR = true,
     .getPhysicalDeviceSurfacePresentModesKHR = true,
+    .getPhysicalDeviceSurfaceCapabilitiesKHR = true,
     .getPhysicalDeviceQueueFamilyProperties = true,
     .getDeviceProcAddr = true,
     .createDevice = true,
@@ -31,6 +32,8 @@ const InstanceDispatch = vk.InstanceWrapper(.{
 const DeviceDispatch = vk.DeviceWrapper(.{
     .destroyDevice = true,
     .getDeviceQueue = true,
+    .createSwapchainKHR = true,
+    .destroySwapchainKHR = true,
 });
 
 
@@ -47,7 +50,7 @@ pub const VkContext = struct {
     graphics_queue: DeviceQueue,
     present_queue: DeviceQueue,
 
-    pub fn init(allocator: Allocator, app_name: [*:0]const u8, window: glfw.Window) !VkContext {
+    pub fn init(app_name: [*:0]const u8, window: glfw.Window, allocator: Allocator) !VkContext {
         const vk_proc = @ptrCast(fn (instance: vk.Instance, procname: [*:0]const u8) callconv(.C) vk.PfnVoidFunction, glfw.getInstanceProcAddress);
         const base_dispatch = try BaseDispatch.load(vk_proc);
 
@@ -315,6 +318,15 @@ const QueueFamilyIndices = struct {
 
             if (graphics_family == null and family_props.queue_flags.graphics_bit) {
                 graphics_family = @intCast(u32, index);
+
+                // Since we're currenly only using explicit sharing mode for queues in the swapchain if the queue families are the same, 
+                //  it's preferable to use the graphics queue as the present queue as well, if it has present support.
+                // TODO This may change in the future, once the transfer between queues is explicit.
+                const present_supported = vk.TRUE == try vki.getPhysicalDeviceSurfaceSupportKHR(pd, graphics_family.?, surface);
+                if (present_supported) {
+                    present_family = graphics_family;
+                    break;
+                }
             }
 
             if (present_family == null and (try vki.getPhysicalDeviceSurfaceSupportKHR(pd, @intCast(u32, index), surface)) == vk.TRUE) {

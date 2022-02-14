@@ -2,9 +2,8 @@ const std = @import("std");
 const glfw = @import("glfw");
 const vk = @import("vulkan");
 const builtin = @import("builtin");
-
-const VkContext = @import("vk/vkcontext.zig").VkContext;
-
+const VkContext = @import("vk/vk_context.zig").VkContext;
+const Swapchain = @import("vk/vk_swapchain.zig").Swapchain;
 
 pub fn main() !void {
     try glfw.init(.{});
@@ -22,8 +21,11 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const context = try VkContext.init(allocator, app_name, window);
+    const context = try VkContext.init(app_name, window, allocator);
     defer context.deinit();
+
+    const swapchain = try Swapchain.init(context, window, allocator);
+    defer swapchain.deinit(context);
 
     while (!window.shouldClose()) {
         try glfw.pollEvents();
