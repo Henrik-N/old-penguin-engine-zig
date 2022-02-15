@@ -30,7 +30,6 @@ const InstanceDispatch = vk.InstanceWrapper(.{
 });
 
 const DeviceDispatch = vk.DeviceWrapper(.{
-    // device
     .destroyDevice = true,
     .getDeviceQueue = true,
     .createSwapchainKHR = true,
@@ -40,6 +39,7 @@ const DeviceDispatch = vk.DeviceWrapper(.{
     .destroySemaphore = true,
     .createFence = true,
     .destroyFence = true,
+    .resetFences = true,
     .createImageView = true,
     .destroyImageView = true,
     .waitForFences = true,
@@ -56,6 +56,18 @@ const DeviceDispatch = vk.DeviceWrapper(.{
     .createCommandPool = true,
     .destroyCommandPool = true,
     .allocateCommandBuffers = true,
+    .acquireNextImageKHR = true,
+    .beginCommandBuffer = true,
+    .endCommandBuffer = true,
+    .resetCommandBuffer = true,
+    .cmdBeginRenderPass = true,
+    .cmdEndRenderPass = true,
+    .queueSubmit = true,
+    .queuePresentKHR = true,
+    .cmdBindPipeline = true,
+    .queueWaitIdle = true, // temp
+    .deviceWaitIdle = true,
+    .cmdDraw = true,
 });
 
 pub const VkContext = struct {

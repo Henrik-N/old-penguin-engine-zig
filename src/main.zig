@@ -47,7 +47,11 @@ pub fn main() !void {
     const vertex_input_state = vk_init.pipeline.vertexInputStateCreateInfo();
     const input_assembly_state = vk_init.pipeline.inputAssemblyStateCreateInfo(vk.PrimitiveTopology.triangle_list);
     // const tessellation_state: ?vk.PipelineTessellationStateCreateInfo = null;
-    const viewport_state = vk_init.pipeline.viewportStateCreateInfo();
+
+    const viewport = vk_init.pipeline.viewport(swapchain.extent);
+    const scissor = vk_init.pipeline.scissor(swapchain.extent);
+    const viewport_state = vk_init.pipeline.viewportStateCreateInfo(viewport, scissor);
+
     const rasterization_state = vk_init.pipeline.rasterizationStateCreateInfo(vk.PolygonMode.fill); // .line, .point
     const multisample_state = vk_init.pipeline.multisampleStateCreateInfo();
     // const depth_stencil_state: ?vk.PipelineDepthStencilStateCreateInfo = null;
@@ -55,8 +59,8 @@ pub fn main() !void {
         vk_init.pipeline.colorBlendAttachmentState(.alpha_blending),
     };
     const color_blend_state = vk_init.pipeline.colorBlendStateCreateInfo(color_blend_attachment_states[0..]);
-    const dynamic_states_to_enable = [_]vk.DynamicState{ .viewport, .scissor, .line_width };
-    const dynamic_state = vk_init.pipeline.dynamicStateCreateInfo(dynamic_states_to_enable[0..]);
+    //const dynamic_states_to_enable = [_]vk.DynamicState{ .viewport, .scissor, .line_width };
+    //const dynamic_state = vk_init.pipeline.dynamicStateCreateInfo(dynamic_states_to_enable[0..]);
 
     const pipeline_layout = try context.vkd.createPipelineLayout(context.device, &.{
         .flags = .{},
@@ -82,7 +86,7 @@ pub fn main() !void {
         .p_multisample_state = &multisample_state,
         .p_depth_stencil_state = null,
         .p_color_blend_state = &color_blend_state,
-        .p_dynamic_state = &dynamic_state,
+        .p_dynamic_state = null,
         .layout = pipeline_layout,
         // NOTE It is possible to use other render passes with this pipeline instance than the one set here,
         // provided they are a compatible renderpass.
@@ -106,13 +110,104 @@ pub fn main() !void {
     defer for (framebuffers) |framebuffer| context.vkd.destroyFramebuffer(context.device, framebuffer, null);
 
     // command pool and command buffers
-    const command_pool = try vk_init.commandPool(context, .{}, context.graphics_queue.family);
+    // const command_pool = try vk_init.commandPool(context, .{}, context.graphics_queue.family);
+    const command_pool = try vk_init.commandPool(context, .{ .reset_command_buffer_bit = true }, context.graphics_queue.family); // TODO the reset flag is temp
     defer context.vkd.destroyCommandPool(context.device, command_pool, null);
 
     const command_buffers = try vk_init.commandBuffers(allocator, context, command_pool, .primary, framebuffers.len);
-    defer allocator.free(command_buffers);
+    defer allocator.free(command_buffers); // destroys the handles only. The subsequent call to destroyCommandPool will clear up the data.
+
+    // sync
+    // const fence = try context.vkd.createFence(context.device, &.{ .flags = .{ .signaled_bit = true }, }, null);
+    const render_fence = try vk_init.fence(context, .{ .signaled_bit = true });
+    defer context.vkd.destroyFence(context.device, render_fence, null);
+
+    const image_acquired_semaphore = try vk_init.semaphore(context);
+    defer context.vkd.destroySemaphore(context.device, image_acquired_semaphore, null);
+
+    const render_complete_semaphore = try vk_init.semaphore(context);
+    defer context.vkd.destroySemaphore(context.device, render_complete_semaphore, null);
+
+    var frame_num: f32 = 0;
 
     while (!window.shouldClose()) {
         try glfw.pollEvents();
+        frame_num += 1; // TODO overflow check stuff
+
+        //------------- render loop ----------------
+        const timeout = std.math.maxInt(u64); // TODO change timeout?
+        _ = try context.vkd.waitForFences(context.device, 1, @ptrCast([*]const vk.Fence, &render_fence), vk.TRUE, timeout);
+        _ = try context.vkd.resetFences(context.device, 1, @ptrCast([*]const vk.Fence, &render_fence));
+
+        const result = try context.vkd.acquireNextImageKHR(context.device, swapchain.handle, timeout, image_acquired_semaphore, .null_handle);
+        const swapchain_image_index = result.image_index;
+
+        const test_cmd_buf = command_buffers[swapchain_image_index];
+
+        {
+            try context.vkd.resetCommandBuffer(test_cmd_buf, .{});
+            try context.vkd.beginCommandBuffer(test_cmd_buf, &.{
+                .flags = .{ .one_time_submit_bit = true },
+                .p_inheritance_info = null, // for secondary command buffers
+            });
+
+            const flash: f32 = std.math.sin(frame_num / 120);
+            const clear_value = vk.ClearValue{
+                .color = .{ .float_32 = .{ 0, 0, flash, 1 } },
+            };
+
+            const render_area = vk.Rect2D{
+                .offset = .{ .x = 0, .y = 0 },
+                .extent = swapchain.extent,
+            };
+
+            const render_pass_begin_info = vk.RenderPassBeginInfo{
+                .render_pass = render_pass,
+                .framebuffer = framebuffers[swapchain_image_index], // temp
+                .render_area = render_area,
+                .clear_value_count = 1,
+                .p_clear_values = @ptrCast([*]const vk.ClearValue, &clear_value),
+            };
+            {
+                // render pass
+                context.vkd.cmdBeginRenderPass(test_cmd_buf, &render_pass_begin_info, .@"inline");
+                defer context.vkd.cmdEndRenderPass(test_cmd_buf);
+
+                context.vkd.cmdBindPipeline(test_cmd_buf, vk.PipelineBindPoint.graphics, pipeline);
+                context.vkd.cmdDraw(test_cmd_buf, 3, 1, 0, 0);
+            } // end of render pass
+
+            try context.vkd.endCommandBuffer(test_cmd_buf);
+        } // end of command buffer
+
+        const pipeline_wait_stage: vk.PipelineStageFlags = vk.PipelineStageFlags{ .color_attachment_output_bit = true };
+
+        const submit_info = vk.SubmitInfo{
+            .wait_semaphore_count = 1,
+            .p_wait_semaphores = @ptrCast([*]const vk.Semaphore, &image_acquired_semaphore),
+            .p_wait_dst_stage_mask = @ptrCast([*]const vk.PipelineStageFlags, &pipeline_wait_stage),
+            .command_buffer_count = 1,
+            .p_command_buffers = @ptrCast([*]const vk.CommandBuffer, &test_cmd_buf),
+            .signal_semaphore_count = 1,
+            .p_signal_semaphores = @ptrCast([*]const vk.Semaphore, &render_complete_semaphore),
+        };
+
+        try context.vkd.queueSubmit(context.graphics_queue.handle, 1, @ptrCast([*]const vk.SubmitInfo, &submit_info), render_fence);
+
+        // TODO THIS IS TEMP
+        try context.vkd.queueWaitIdle(context.graphics_queue.handle);
+
+        const present_info = vk.PresentInfoKHR{
+            .wait_semaphore_count = 1,
+            .p_wait_semaphores = @ptrCast([*]const vk.Semaphore, &render_complete_semaphore),
+            .swapchain_count = 1,
+            .p_swapchains = @ptrCast([*]const vk.SwapchainKHR, &swapchain.handle),
+            .p_image_indices = @ptrCast([*]const u32, &swapchain_image_index),
+            .p_results = null,
+        };
+
+        _ = try context.vkd.queuePresentKHR(context.present_queue.handle, &present_info);
     }
+
+    try context.vkd.deviceWaitIdle(context.device);
 }

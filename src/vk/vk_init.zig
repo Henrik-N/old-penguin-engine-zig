@@ -48,16 +48,28 @@ pub const pipeline = struct {
         };
     }
 
+    pub fn viewport(extent: vk.Extent2D) vk.Viewport {
+        return .{
+            .x = 0,
+            .y = 0,
+            .width = @intToFloat(f32, extent.width),
+            .height = @intToFloat(f32, extent.height),
+            .min_depth = 0,
+            .max_depth = 1,
+        };
+    }
+
+    pub fn scissor(extent: vk.Extent2D) vk.Rect2D {
+        return .{
+            .offset = .{ .x = 0, .y = 0 },
+            .extent = extent,
+        };
+    }
+
     /// Details about the regions of the framebuffer we'll render to. 
     /// Penguin Engine will only use one viewport that covers the entire screen, at least for now.
-    pub fn viewportStateCreateInfo() vk.PipelineViewportStateCreateInfo {
-        return .{
-            .flags = .{},
-            .viewport_count = 1,
-            .p_viewports = undefined, // setting this dynamically in command buffer.
-            .scissor_count = 1,
-            .p_scissors = undefined, // setting this dynamically in command buffer.
-        };
+    pub fn viewportStateCreateInfo(in_viewport: vk.Viewport, in_scissor: vk.Rect2D) vk.PipelineViewportStateCreateInfo {
+        return .{ .flags = .{}, .viewport_count = 1, .p_viewports = @ptrCast([*]const vk.Viewport, &in_viewport), .scissor_count = 1, .p_scissors = @ptrCast([*]const vk.Rect2D, &in_scissor) };
     }
 
     /// Configuration regarding how to turn the geometry into fragments (basically pixels) for the fragment shader.
@@ -193,14 +205,24 @@ pub fn defaultRenderPass(context: VkContext, swapchain: Swapchain) !vk.RenderPas
         .p_preserve_attachments = undefined,
     }};
 
+    const subpass_dependency = vk.SubpassDependency{
+        .src_subpass = vk.SUBPASS_EXTERNAL, // the implicit subpass before or after the subpass (depending on if it's in src or dst)
+        .dst_subpass = 0,
+        .src_stage_mask = .{ .color_attachment_output_bit = true },
+        .src_access_mask = .{},
+        .dst_stage_mask = .{ .color_attachment_output_bit = true },
+        .dst_access_mask = .{ .color_attachment_write_bit = true },
+        .dependency_flags = .{},
+    };
+
     const render_pass_create_info = vk.RenderPassCreateInfo{
         .flags = .{},
         .attachment_count = @intCast(u32, attachments.len),
         .p_attachments = @ptrCast([*]const vk.AttachmentDescription, &attachments),
         .subpass_count = @intCast(u32, subpasses.len),
         .p_subpasses = @ptrCast([*]const vk.SubpassDescription, &subpasses),
-        .dependency_count = 0,
-        .p_dependencies = undefined,
+        .dependency_count = 1,
+        .p_dependencies = @ptrCast([*]const vk.SubpassDependency, &subpass_dependency),
     };
 
     return try context.vkd.createRenderPass(context.device, &render_pass_create_info, null);
@@ -253,4 +275,14 @@ pub fn commandBuffers(allocator: Allocator, context: VkContext, command_pool: vk
     try context.vkd.allocateCommandBuffers(context.device, &command_buffers_allocate_info, command_buffers.ptr);
     // destroyed on command pool destruction
     return command_buffers;
+}
+
+pub fn fence(context: VkContext, flags: vk.FenceCreateFlags) !vk.Fence {
+    return try context.vkd.createFence(context.device, &.{
+        .flags = flags,
+    }, null);
+}
+
+pub fn semaphore(context: VkContext) !vk.Semaphore {
+    return try context.vkd.createSemaphore(context.device, &.{ .flags = .{} }, null);
 }
