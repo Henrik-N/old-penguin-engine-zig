@@ -37,9 +37,6 @@ pub fn main() !void {
     const frag_shader_module = try vk_init.shaderModule(context, ShaderResources.tri_frag);
     defer context.vkd.destroyShaderModule(context.device, frag_shader_module, null);
 
-    _ = vert_shader_module;
-    _ = frag_shader_module;
-
     // pipeline
     //
     const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
@@ -49,10 +46,11 @@ pub fn main() !void {
 
     const vertex_input_state = vk_init.pipeline.vertexInputStateCreateInfo();
     const input_assembly_state = vk_init.pipeline.inputAssemblyStateCreateInfo(vk.PrimitiveTopology.triangle_list);
+    // const tessellation_state: ?vk.PipelineTessellationStateCreateInfo = null;
     const viewport_state = vk_init.pipeline.viewportStateCreateInfo();
     const rasterization_state = vk_init.pipeline.rasterizationStateCreateInfo(vk.PolygonMode.fill); // .line, .point
     const multisample_state = vk_init.pipeline.multisampleStateCreateInfo();
-    const depth_stencil_state = null; // TODO depth/stencil state
+    // const depth_stencil_state: ?vk.PipelineDepthStencilStateCreateInfo = null;
     const color_blend_attachment_states = [_]vk.PipelineColorBlendAttachmentState{
         vk_init.pipeline.colorBlendAttachmentState(.alpha_blending),
     };
@@ -69,20 +67,46 @@ pub fn main() !void {
     }, null);
     defer context.vkd.destroyPipelineLayout(context.device, pipeline_layout, null);
 
-    _ = shader_stages;
-    _ = vertex_input_state;
-    _ = input_assembly_state;
-    _ = viewport_state;
-    _ = rasterization_state;
-    _ = multisample_state;
-    _ = depth_stencil_state;
-    _ = color_blend_state;
-    _ = dynamic_state;
-    _ = pipeline_layout;
+    const render_pass = try initDefaultRenderPass(context, swapchain);
+    defer context.vkd.destroyRenderPass(context.device, render_pass, null);
 
+    const pipeline_create_info = vk.GraphicsPipelineCreateInfo{
+        .flags = .{},
+        .stage_count = @intCast(u32, shader_stages.len),
+        .p_stages = @ptrCast([*]const vk.PipelineShaderStageCreateInfo, &shader_stages),
+        .p_vertex_input_state = &vertex_input_state,
+        .p_input_assembly_state = &input_assembly_state,
+        .p_tessellation_state = null,
+        .p_viewport_state = &viewport_state,
+        .p_rasterization_state = &rasterization_state,
+        .p_multisample_state = &multisample_state,
+        .p_depth_stencil_state = null,
+        .p_color_blend_state = &color_blend_state,
+        .p_dynamic_state = &dynamic_state,
+        .layout = pipeline_layout,
+        // NOTE It is possible to use other render passes with this pipeline instance than the one set here,
+        // provided they are a compatible renderpass.
+        // More info here: https://www.khronos.org/registry/vulkan/specs/1.3-extensions/html/chap8.html#renderpass-compatibility
+        .render_pass = render_pass,
+        .subpass = 0, // the index of the subpass in the render pass where this pipeline will be used
+        //
+        .base_pipeline_handle = .null_handle,
+        .base_pipeline_index = -1,
+    };
 
-    // render pass
-    // 
+    const pipeline_cache: vk.PipelineCache = .null_handle;
+
+    var pipeline: vk.Pipeline = undefined;
+    _ = try context.vkd.createGraphicsPipelines(context.device, pipeline_cache, 1, // pipeline count
+        @ptrCast([*]const vk.GraphicsPipelineCreateInfo, &pipeline_create_info), null, @ptrCast([*]vk.Pipeline, &pipeline));
+    defer context.vkd.destroyPipeline(context.device, pipeline, null);
+
+    while (!window.shouldClose()) {
+        try glfw.pollEvents();
+    }
+}
+
+fn initDefaultRenderPass(context: VkContext, swapchain: Swapchain) !vk.RenderPass {
     const attachments = [_]vk.AttachmentDescription{
         // color attachment
         .{
@@ -106,20 +130,19 @@ pub fn main() !void {
     };
 
     const subpasses = [_]vk.SubpassDescription{
-        // color subpass
-        .{
-            .flags = .{},
-            .pipeline_bind_point = .graphics,
-            .input_attachment_count = 0,
-            .p_input_attachments = undefined,
-            .color_attachment_count = 1,
-            .p_color_attachments = @ptrCast([*]const vk.AttachmentReference, &color_attachment_ref),
-            .p_resolve_attachments = null,
-            .p_depth_stencil_attachment = null,
-            .preserve_attachment_count = 0,
-            .p_preserve_attachments = undefined,
-        }
-    };
+    // color subpass
+    .{
+        .flags = .{},
+        .pipeline_bind_point = .graphics,
+        .input_attachment_count = 0,
+        .p_input_attachments = undefined,
+        .color_attachment_count = 1,
+        .p_color_attachments = @ptrCast([*]const vk.AttachmentReference, &color_attachment_ref),
+        .p_resolve_attachments = null,
+        .p_depth_stencil_attachment = null,
+        .preserve_attachment_count = 0,
+        .p_preserve_attachments = undefined,
+    }};
 
     const render_pass_create_info = vk.RenderPassCreateInfo{
         .flags = .{},
@@ -130,13 +153,6 @@ pub fn main() !void {
         .dependency_count = 0,
         .p_dependencies = undefined,
     };
-    const render_pass = try context.vkd.createRenderPass(context.device, &render_pass_create_info, null);
-    defer context.vkd.destroyRenderPass(context.device, render_pass, null);
 
-
-
-
-    while (!window.shouldClose()) {
-        try glfw.pollEvents();
-    }
+    return try context.vkd.createRenderPass(context.device, &render_pass_create_info, null);
 }

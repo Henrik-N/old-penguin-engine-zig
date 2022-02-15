@@ -49,6 +49,8 @@ const DeviceDispatch = vk.DeviceWrapper(.{
     .destroyPipelineLayout = true,
     .createRenderPass = true,
     .destroyRenderPass = true,
+    .createGraphicsPipelines = true,
+    .destroyPipeline = true,
 });
 
 pub const VkContext = struct {
