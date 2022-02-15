@@ -42,6 +42,8 @@ const DeviceDispatch = vk.DeviceWrapper(.{
     .createImageView = true,
     .destroyImageView = true,
     .waitForFences = true,
+    .createShaderModule = true,
+    .destroyShaderModule = true,
 });
 
 pub const VkContext = struct {

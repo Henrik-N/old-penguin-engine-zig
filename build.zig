@@ -1,7 +1,19 @@
 const std = @import("std");
+const Builder = std.build.Builder;
+const LibExeObjStep = std.build.LibExeObjStep;
+
+fn addShaders(b: *Builder, exe: *LibExeObjStep) void {
+    const zigvulkan = @import("vendor/vulkan-zig/build.zig");
+
+    const res = zigvulkan.ResourceGenStep.init(b, "resources.zig");
+    res.addShader("tri_vert", "shaders/tri.vert");
+    res.addShader("tri_frag", "shaders/tri.frag");
+    exe.addPackage(res.package);
+}
 
 
-pub fn build(b: *std.build.Builder) void {
+
+pub fn build(b: *Builder) void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
@@ -19,7 +31,7 @@ pub fn build(b: *std.build.Builder) void {
 
     addGlfw(b, exe);
     addVulkanZig(b, exe);
-
+    addShaders(b, exe);
 
 
     const run_cmd = exe.run();
@@ -32,14 +44,14 @@ pub fn build(b: *std.build.Builder) void {
     run_step.dependOn(&run_cmd.step);
 }
 
-fn addGlfw(b: *std.build.Builder, exe: *std.build.LibExeObjStep) void {
+fn addGlfw(b: *Builder, exe: *LibExeObjStep) void {
     const glfw = @import("vendor/mach-glfw/build.zig");
 
     exe.addPackagePath("glfw", "vendor/mach-glfw/src/main.zig");
     glfw.link(b, exe, .{});
 }
 
-fn addVulkanZig(b: *std.build.Builder, exe: *std.build.LibExeObjStep) void {
+fn addVulkanZig(b: *Builder, exe: *LibExeObjStep) void {
     // generate bindings
     const vkgen = @import("vendor/vulkan-zig/generator/index.zig");
     
