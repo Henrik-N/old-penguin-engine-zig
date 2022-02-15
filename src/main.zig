@@ -67,7 +67,7 @@ pub fn main() !void {
     }, null);
     defer context.vkd.destroyPipelineLayout(context.device, pipeline_layout, null);
 
-    const render_pass = try initDefaultRenderPass(context, swapchain);
+    const render_pass = try vk_init.defaultRenderPass(context, swapchain);
     defer context.vkd.destroyRenderPass(context.device, render_pass, null);
 
     const pipeline_create_info = vk.GraphicsPipelineCreateInfo{
@@ -105,58 +105,14 @@ pub fn main() !void {
     defer allocator.free(framebuffers);
     defer for (framebuffers) |framebuffer| context.vkd.destroyFramebuffer(context.device, framebuffer, null);
 
+    // command pool and command buffers
+    const command_pool = try vk_init.commandPool(context, .{}, context.graphics_queue.family);
+    defer context.vkd.destroyCommandPool(context.device, command_pool, null);
+
+    const command_buffers = try vk_init.commandBuffers(allocator, context, command_pool, .primary, framebuffers.len);
+    defer allocator.free(command_buffers);
+
     while (!window.shouldClose()) {
         try glfw.pollEvents();
     }
-}
-
-fn initDefaultRenderPass(context: VkContext, swapchain: Swapchain) !vk.RenderPass {
-    const attachments = [_]vk.AttachmentDescription{
-        // color attachment
-        .{
-            .flags = .{},
-            .format = swapchain.surface_format.format,
-            .samples = .{ .@"1_bit" = true },
-            .load_op = .clear, // what to do with the data before rendering, clear framebuffer
-            .store_op = .store, // what to do with the data after rendering, store framebuffer (as we want to see the contents on the screen)
-            //
-            .stencil_load_op = .dont_care,
-            .stencil_store_op = .dont_care,
-            //
-            .initial_layout = .@"undefined", // we clear it anyway
-            .final_layout = .present_src_khr, // ready image for presentation in the swapchain
-        },
-    };
-
-    const color_attachment_ref = vk.AttachmentReference{
-        .attachment = 0,
-        .layout = .color_attachment_optimal,
-    };
-
-    const subpasses = [_]vk.SubpassDescription{
-    // color subpass
-    .{
-        .flags = .{},
-        .pipeline_bind_point = .graphics,
-        .input_attachment_count = 0,
-        .p_input_attachments = undefined,
-        .color_attachment_count = 1,
-        .p_color_attachments = @ptrCast([*]const vk.AttachmentReference, &color_attachment_ref),
-        .p_resolve_attachments = null,
-        .p_depth_stencil_attachment = null,
-        .preserve_attachment_count = 0,
-        .p_preserve_attachments = undefined,
-    }};
-
-    const render_pass_create_info = vk.RenderPassCreateInfo{
-        .flags = .{},
-        .attachment_count = @intCast(u32, attachments.len),
-        .p_attachments = @ptrCast([*]const vk.AttachmentDescription, &attachments),
-        .subpass_count = @intCast(u32, subpasses.len),
-        .p_subpasses = @ptrCast([*]const vk.SubpassDescription, &subpasses),
-        .dependency_count = 0,
-        .p_dependencies = undefined,
-    };
-
-    return try context.vkd.createRenderPass(context.device, &render_pass_create_info, null);
 }
