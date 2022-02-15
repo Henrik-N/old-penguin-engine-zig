@@ -25,7 +25,8 @@ pub fn main() !void {
     defer context.deinit();
 
     const swapchain = try Swapchain.init(context, window, allocator);
-    defer swapchain.deinit(context);
+    defer swapchain.deinit(context, allocator);
+
 
     while (!window.shouldClose()) {
         try glfw.pollEvents();

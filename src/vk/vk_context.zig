@@ -34,8 +34,15 @@ const DeviceDispatch = vk.DeviceWrapper(.{
     .getDeviceQueue = true,
     .createSwapchainKHR = true,
     .destroySwapchainKHR = true,
+    .getSwapchainImagesKHR = true,
+    .createSemaphore = true,
+    .destroySemaphore = true,
+    .createFence = true,
+    .destroyFence = true,
+    .createImageView = true,
+    .destroyImageView = true,
+    .waitForFences = true,
 });
-
 
 pub const VkContext = struct {
     vki: InstanceDispatch,
@@ -82,7 +89,7 @@ pub const VkContext = struct {
         errdefer vki.destroySurfaceKHR(instance, surface, null);
 
         const required_device_extensions = [_][*:0]const u8{vk.extension_info.khr_swapchain.name};
-        const physical_device = try PhysicalDeviceSelector.selectPhysicalDevice(vki, instance, allocator, surface, required_device_extensions[0..]);
+        const physical_device = try physical_device_selector.selectPhysicalDevice(vki, instance, allocator, surface, required_device_extensions[0..]);
 
         const queue_family_indices = try QueueFamilyIndices.find(vki, physical_device, surface, allocator);
 
@@ -174,20 +181,20 @@ fn debugMessengerCallback(
 
     if (p_callback_data) |callback_data| {
         const severity = vk.DebugUtilsMessageSeverityFlagsEXT.fromInt(message_severity);
-        const prefix = "[VK_VALIDATION]: "; 
+        const prefix = "[VK_VALIDATION]: ";
         const msg = callback_data.p_message;
 
-        if (severity.contains(.{.info_bit_ext = true })) {
-            std.log.info("{s}{s}", .{prefix, msg});
-        } else if (severity.contains(.{.warning_bit_ext = true })) {
-            std.log.warn("{s}{s}", .{prefix, msg});
-        } else if (severity.contains(.{.error_bit_ext = true })) {
-            std.log.err("{s}{s}", .{prefix, msg});
+        if (severity.contains(.{ .info_bit_ext = true })) {
+            std.log.info("{s}{s}", .{ prefix, msg });
+        } else if (severity.contains(.{ .warning_bit_ext = true })) {
+            std.log.warn("{s}{s}", .{ prefix, msg });
+        } else if (severity.contains(.{ .error_bit_ext = true })) {
+            std.log.err("{s}{s}", .{ prefix, msg });
         } else {
-            std.log.err("(Unknown severity) {s}{s}", .{prefix, callback_data.p_message});
+            std.log.err("(Unknown severity) {s}{s}", .{ prefix, callback_data.p_message });
         }
     }
-    
+
     return vk.FALSE;
 }
 
@@ -212,7 +219,7 @@ fn initDebugMessenger(vki: InstanceDispatch, instance: vk.Instance) !?vk.DebugUt
     return try vki.createDebugUtilsMessengerEXT(instance, &create_info, null);
 }
 
-const PhysicalDeviceSelector = struct {
+const physical_device_selector = struct {
     fn selectPhysicalDevice(
         vki: InstanceDispatch,
         instance: vk.Instance,
@@ -306,7 +313,7 @@ const QueueFamilyIndices = struct {
     fn find(vki: InstanceDispatch, pd: vk.PhysicalDevice, surface: vk.SurfaceKHR, allocator: Allocator) !QueueFamilyIndices {
         var family_count: u32 = undefined;
         vki.getPhysicalDeviceQueueFamilyProperties(pd, &family_count, null);
- 
+
         const family_properties = try allocator.alloc(vk.QueueFamilyProperties, family_count);
         defer allocator.free(family_properties);
         vki.getPhysicalDeviceQueueFamilyProperties(pd, &family_count, family_properties.ptr);
@@ -315,11 +322,10 @@ const QueueFamilyIndices = struct {
         var present_family: ?u32 = null;
 
         for (family_properties) |family_props, index| {
-
             if (graphics_family == null and family_props.queue_flags.graphics_bit) {
                 graphics_family = @intCast(u32, index);
 
-                // Since we're currenly only using explicit sharing mode for queues in the swapchain if the queue families are the same, 
+                // Since we're currenly only using explicit sharing mode for queues in the swapchain if the queue families are the same,
                 //  it's preferable to use the graphics queue as the present queue as well, if it has present support.
                 // TODO This may change in the future, once the transfer between queues is explicit.
                 const present_supported = vk.TRUE == try vki.getPhysicalDeviceSurfaceSupportKHR(pd, graphics_family.?, surface);
@@ -347,20 +353,17 @@ const QueueFamilyIndices = struct {
 
 fn initDevice(vki: InstanceDispatch, pd: vk.PhysicalDevice, device_extensions: []const [*:0]const u8, queue_family_indices: QueueFamilyIndices) !vk.Device {
     const queue_priority = [_]f32{1};
-    const queues_create_info = [_]vk.DeviceQueueCreateInfo{
-        .{
-            .flags = .{},
-            .queue_family_index = queue_family_indices.graphics,
-            .queue_count = 1,
-            .p_queue_priorities = &queue_priority,
-        },
-        .{
-            .flags = .{},
-            .queue_family_index = queue_family_indices.present,
-            .queue_count = 1,
-            .p_queue_priorities = &queue_priority,
-        }
-    };
+    const queues_create_info = [_]vk.DeviceQueueCreateInfo{ .{
+        .flags = .{},
+        .queue_family_index = queue_family_indices.graphics,
+        .queue_count = 1,
+        .p_queue_priorities = &queue_priority,
+    }, .{
+        .flags = .{},
+        .queue_family_index = queue_family_indices.present,
+        .queue_count = 1,
+        .p_queue_priorities = &queue_priority,
+    } };
 
     const queue_count: u32 = if (queue_family_indices.graphics == queue_family_indices.present) 1 else 2;
 
@@ -383,7 +386,6 @@ fn initDevice(vki: InstanceDispatch, pd: vk.PhysicalDevice, device_extensions: [
 
     return try vki.createDevice(pd, &create_info, null);
 }
-
 
 pub const DeviceQueue = struct {
     handle: vk.Queue,
