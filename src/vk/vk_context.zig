@@ -30,6 +30,7 @@ const InstanceDispatch = vk.InstanceWrapper(.{
 });
 
 const DeviceDispatch = vk.DeviceWrapper(.{
+    // device
     .destroyDevice = true,
     .getDeviceQueue = true,
     .createSwapchainKHR = true,
@@ -44,6 +45,8 @@ const DeviceDispatch = vk.DeviceWrapper(.{
     .waitForFences = true,
     .createShaderModule = true,
     .destroyShaderModule = true,
+    .createPipelineLayout = true,
+    .destroyPipelineLayout = true,
 });
 
 pub const VkContext = struct {
@@ -240,13 +243,8 @@ const physical_device_selector = struct {
         var highest_suitabliity_rating_index: ?usize = null;
 
         for (physical_devices) |pd, index| {
-            if (!try areExtensionsSupported(vki, pd, allocator, required_extensions)) {
-                continue;
-            }
-
-            if (!try hasSurfaceSupport(vki, pd, surface)) {
-                continue;
-            }
+            ensureExtensionsSupported(vki, pd, allocator, required_extensions) catch continue;
+            ensureHasSurfaceSupport(vki, pd, surface) catch continue;
 
             const props = vki.getPhysicalDeviceProperties(pd);
 
@@ -272,7 +270,7 @@ const physical_device_selector = struct {
         }
     }
 
-    fn areExtensionsSupported(vki: InstanceDispatch, pd: vk.PhysicalDevice, allocator: Allocator, extensions: []const [*:0]const u8) !bool {
+    fn ensureExtensionsSupported(vki: InstanceDispatch, pd: vk.PhysicalDevice, allocator: Allocator, extensions: []const [*:0]const u8) !void {
         // enumerate extensions
         var ext_prop_count: u32 = undefined;
         _ = try vki.enumerateDeviceExtensionProperties(pd, null, &ext_prop_count, null);
@@ -290,21 +288,21 @@ const physical_device_selector = struct {
                     break;
                 }
             } else {
-                return false;
+                return error.ExtensionsNotSupported;
             }
         }
-
-        return true;
     }
 
-    fn hasSurfaceSupport(vki: InstanceDispatch, pd: vk.PhysicalDevice, surface: vk.SurfaceKHR) !bool {
+    fn ensureHasSurfaceSupport(vki: InstanceDispatch, pd: vk.PhysicalDevice, surface: vk.SurfaceKHR) !void {
         var format_count: u32 = undefined;
         _ = try vki.getPhysicalDeviceSurfaceFormatsKHR(pd, surface, &format_count, null);
 
         var present_mode_count: u32 = undefined;
         _ = try vki.getPhysicalDeviceSurfacePresentModesKHR(pd, surface, &present_mode_count, null);
 
-        return format_count > 0 and present_mode_count > 0;
+        if (format_count < 1 or present_mode_count < 1) {
+            return error.NoSurfaceSupport;
+        }
     }
 };
 
