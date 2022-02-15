@@ -1,5 +1,7 @@
 const vk = @import("vulkan");
 const VkContext = @import("vk_context.zig").VkContext;
+const Swapchain = @import("vk_swapchain.zig").Swapchain;
+const Allocator = @import("std").mem.Allocator;
 
 pub fn shaderModule(context: VkContext, comptime shader_source: []const u8) !vk.ShaderModule {
     const shader_module = try context.vkd.createShaderModule(context.device, &.{
@@ -152,3 +154,31 @@ pub const pipeline = struct {
         };
     }
 };
+
+pub fn frameBuffers(allocator: Allocator, context: VkContext, render_pass: vk.RenderPass, swapchain: Swapchain) ![]vk.Framebuffer {
+    const framebuffers = try allocator.alloc(vk.Framebuffer, swapchain.images.len);
+    errdefer allocator.free(framebuffers);
+
+    var initialized_count: usize = 0;
+    errdefer for (framebuffers[0..initialized_count]) |framebuffer| context.vkd.destroyFramebuffer(context.device, framebuffer, null);
+
+    const framebuffer_width = swapchain.extent.width;
+    const framebuffer_height = swapchain.extent.height;
+
+    for (swapchain.images) |swap_image| {
+        const framebuffer_create_info = vk.FramebufferCreateInfo{
+            .flags = .{},
+            .render_pass = render_pass,
+            .attachment_count = 1,
+            .p_attachments = @ptrCast([*]const vk.ImageView, &swap_image.image_view),
+            .width = framebuffer_width,
+            .height = framebuffer_height,
+            .layers = 1, // number of layers in the image arrays
+        };
+
+        framebuffers[initialized_count] = try context.vkd.createFramebuffer(context.device, &framebuffer_create_info, null);
+        initialized_count += 1;
+    }
+
+    return framebuffers;
+}

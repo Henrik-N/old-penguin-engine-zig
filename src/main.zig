@@ -101,6 +101,10 @@ pub fn main() !void {
         @ptrCast([*]const vk.GraphicsPipelineCreateInfo, &pipeline_create_info), null, @ptrCast([*]vk.Pipeline, &pipeline));
     defer context.vkd.destroyPipeline(context.device, pipeline, null);
 
+    const framebuffers = try vk_init.frameBuffers(allocator, context, render_pass, swapchain);
+    defer allocator.free(framebuffers);
+    defer for (framebuffers) |framebuffer| context.vkd.destroyFramebuffer(context.device, framebuffer, null);
+
     while (!window.shouldClose()) {
         try glfw.pollEvents();
     }

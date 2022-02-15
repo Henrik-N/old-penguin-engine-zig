@@ -9,6 +9,7 @@ pub const Swapchain = struct {
     handle: vk.SwapchainKHR,
     images: []SwapImage,
     surface_format: vk.SurfaceFormatKHR,
+    extent: vk.Extent2D,
 
     pub fn init(context: VkContext, window: glfw.Window, allocator: Allocator) !Swapchain {
         const surface_capabilities = try context.vki.getPhysicalDeviceSurfaceCapabilitiesKHR(context.physical_device, context.surface);
@@ -69,6 +70,7 @@ pub const Swapchain = struct {
             .handle = swapchain,
             .images = images,
             .surface_format = surface_format,
+            .extent = true_extent,
         };
     }
 
@@ -79,7 +81,7 @@ pub const Swapchain = struct {
     }
 };
 
-const SwapImage = struct {
+pub const SwapImage = struct {
     image: vk.Image,
     image_view: vk.ImageView,
     image_acquired: vk.Semaphore,
