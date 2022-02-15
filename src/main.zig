@@ -40,6 +40,8 @@ pub fn main() !void {
     _ = vert_shader_module;
     _ = frag_shader_module;
 
+    // pipeline
+    //
     const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
         vk_init.pipeline.shaderStageCreateInfo(.{ .vertex_bit = true }, vert_shader_module),
         vk_init.pipeline.shaderStageCreateInfo(.{ .fragment_bit = true }, frag_shader_module),
@@ -77,6 +79,62 @@ pub fn main() !void {
     _ = color_blend_state;
     _ = dynamic_state;
     _ = pipeline_layout;
+
+
+    // render pass
+    // 
+    const attachments = [_]vk.AttachmentDescription{
+        // color attachment
+        .{
+            .flags = .{},
+            .format = swapchain.surface_format.format,
+            .samples = .{ .@"1_bit" = true },
+            .load_op = .clear, // what to do with the data before rendering, clear framebuffer
+            .store_op = .store, // what to do with the data after rendering, store framebuffer (as we want to see the contents on the screen)
+            //
+            .stencil_load_op = .dont_care,
+            .stencil_store_op = .dont_care,
+            //
+            .initial_layout = .@"undefined", // we clear it anyway
+            .final_layout = .present_src_khr, // ready image for presentation in the swapchain
+        },
+    };
+
+    const color_attachment_ref = vk.AttachmentReference{
+        .attachment = 0,
+        .layout = .color_attachment_optimal,
+    };
+
+    const subpasses = [_]vk.SubpassDescription{
+        // color subpass
+        .{
+            .flags = .{},
+            .pipeline_bind_point = .graphics,
+            .input_attachment_count = 0,
+            .p_input_attachments = undefined,
+            .color_attachment_count = 1,
+            .p_color_attachments = @ptrCast([*]const vk.AttachmentReference, &color_attachment_ref),
+            .p_resolve_attachments = null,
+            .p_depth_stencil_attachment = null,
+            .preserve_attachment_count = 0,
+            .p_preserve_attachments = undefined,
+        }
+    };
+
+    const render_pass_create_info = vk.RenderPassCreateInfo{
+        .flags = .{},
+        .attachment_count = @intCast(u32, attachments.len),
+        .p_attachments = @ptrCast([*]const vk.AttachmentDescription, &attachments),
+        .subpass_count = @intCast(u32, subpasses.len),
+        .p_subpasses = @ptrCast([*]const vk.SubpassDescription, &subpasses),
+        .dependency_count = 0,
+        .p_dependencies = undefined,
+    };
+    const render_pass = try context.vkd.createRenderPass(context.device, &render_pass_create_info, null);
+    defer context.vkd.destroyRenderPass(context.device, render_pass, null);
+
+
+
 
     while (!window.shouldClose()) {
         try glfw.pollEvents();

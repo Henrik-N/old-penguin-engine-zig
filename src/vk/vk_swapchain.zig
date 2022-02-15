@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 pub const Swapchain = struct {
     handle: vk.SwapchainKHR,
     images: []SwapImage,
+    surface_format: vk.SurfaceFormatKHR,
 
     pub fn init(context: VkContext, window: glfw.Window, allocator: Allocator) !Swapchain {
         const surface_capabilities = try context.vki.getPhysicalDeviceSurfaceCapabilitiesKHR(context.physical_device, context.surface);
@@ -67,6 +68,7 @@ pub const Swapchain = struct {
         return Swapchain{
             .handle = swapchain,
             .images = images,
+            .surface_format = surface_format,
         };
     }
 
