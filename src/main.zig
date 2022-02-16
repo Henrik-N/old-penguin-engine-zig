@@ -2,8 +2,10 @@ const std = @import("std");
 const glfw = @import("glfw");
 const vk = @import("vulkan");
 const builtin = @import("builtin");
+
 const VkContext = @import("vk/vk_context.zig").VkContext;
 const Swapchain = @import("vk/vk_swapchain.zig").Swapchain;
+const PipelineBuilder = @import("vk/vk_pipeline_builder.zig").PipelineBuilder;
 
 const ShaderResources = @import("resources");
 
@@ -39,28 +41,6 @@ pub fn main() !void {
 
     // pipeline
     //
-    const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
-        vk_init.pipeline.shaderStageCreateInfo(.{ .vertex_bit = true }, vert_shader_module),
-        vk_init.pipeline.shaderStageCreateInfo(.{ .fragment_bit = true }, frag_shader_module),
-    };
-
-    const vertex_input_state = vk_init.pipeline.vertexInputStateCreateInfo();
-    const input_assembly_state = vk_init.pipeline.inputAssemblyStateCreateInfo(vk.PrimitiveTopology.triangle_list);
-    // const tessellation_state: ?vk.PipelineTessellationStateCreateInfo = null;
-
-    const viewport = vk_init.pipeline.viewport(swapchain.extent);
-    const scissor = vk_init.pipeline.scissor(swapchain.extent);
-    const viewport_state = vk_init.pipeline.viewportStateCreateInfo(viewport, scissor);
-
-    const rasterization_state = vk_init.pipeline.rasterizationStateCreateInfo(vk.PolygonMode.fill); // .line, .point
-    const multisample_state = vk_init.pipeline.multisampleStateCreateInfo();
-    // const depth_stencil_state: ?vk.PipelineDepthStencilStateCreateInfo = null;
-    const color_blend_attachment_states = [_]vk.PipelineColorBlendAttachmentState{
-        vk_init.pipeline.colorBlendAttachmentState(.alpha_blending),
-    };
-    const color_blend_state = vk_init.pipeline.colorBlendStateCreateInfo(color_blend_attachment_states[0..]);
-    //const dynamic_states_to_enable = [_]vk.DynamicState{ .viewport, .scissor, .line_width };
-    //const dynamic_state = vk_init.pipeline.dynamicStateCreateInfo(dynamic_states_to_enable[0..]);
 
     const pipeline_layout = try context.vkd.createPipelineLayout(context.device, &.{
         .flags = .{},
@@ -74,35 +54,30 @@ pub fn main() !void {
     const render_pass = try vk_init.defaultRenderPass(context, swapchain);
     defer context.vkd.destroyRenderPass(context.device, render_pass, null);
 
-    const pipeline_create_info = vk.GraphicsPipelineCreateInfo{
-        .flags = .{},
-        .stage_count = @intCast(u32, shader_stages.len),
-        .p_stages = @ptrCast([*]const vk.PipelineShaderStageCreateInfo, &shader_stages),
-        .p_vertex_input_state = &vertex_input_state,
-        .p_input_assembly_state = &input_assembly_state,
-        .p_tessellation_state = null,
-        .p_viewport_state = &viewport_state,
-        .p_rasterization_state = &rasterization_state,
-        .p_multisample_state = &multisample_state,
-        .p_depth_stencil_state = null,
-        .p_color_blend_state = &color_blend_state,
-        .p_dynamic_state = null,
-        .layout = pipeline_layout,
-        // NOTE It is possible to use other render passes with this pipeline instance than the one set here,
-        // provided they are a compatible renderpass.
-        // More info here: https://www.khronos.org/registry/vulkan/specs/1.3-extensions/html/chap8.html#renderpass-compatibility
+    const pipeline_builder = PipelineBuilder(.{
+        .shader_stage_count = 2,
+        .color_blend_attachment_state_count = 1,
+    }){
+        .shader_stages = .{
+            vk_init.pipeline.shaderStageCreateInfo(.{ .vertex_bit = true }, vert_shader_module),
+            vk_init.pipeline.shaderStageCreateInfo(.{ .fragment_bit = true }, frag_shader_module),
+        },
+        .vertex_input_state = vk_init.pipeline.vertexInputStateCreateInfo(),
+        .input_assembly_state = vk_init.pipeline.inputAssemblyStateCreateInfo(vk.PrimitiveTopology.triangle_list),
+        .tesselation_state = null,
+        .viewport = vk_init.pipeline.viewport(swapchain.extent),
+        .scissor = vk_init.pipeline.scissor(swapchain.extent),
+        .rasterization_state = vk_init.pipeline.rasterizationStateCreateInfo(vk.PolygonMode.fill), // .line, .point
+        .multisample_state = vk_init.pipeline.multisampleStateCreateInfo(),
+        .depth_stencil_state = null,
+        .dynamic_state = null,
+        .color_blend_attachment_states = .{
+            vk_init.pipeline.colorBlendAttachmentState(.alpha_blending),
+        },
+        .pipeline_layout = pipeline_layout,
         .render_pass = render_pass,
-        .subpass = 0, // the index of the subpass in the render pass where this pipeline will be used
-        //
-        .base_pipeline_handle = .null_handle,
-        .base_pipeline_index = -1,
     };
-
-    const pipeline_cache: vk.PipelineCache = .null_handle;
-
-    var pipeline: vk.Pipeline = undefined;
-    _ = try context.vkd.createGraphicsPipelines(context.device, pipeline_cache, 1, // pipeline count
-        @ptrCast([*]const vk.GraphicsPipelineCreateInfo, &pipeline_create_info), null, @ptrCast([*]vk.Pipeline, &pipeline));
+    const pipeline = try pipeline_builder.init_pipeline(context);
     defer context.vkd.destroyPipeline(context.device, pipeline, null);
 
     const framebuffers = try vk_init.frameBuffers(allocator, context, render_pass, swapchain);
