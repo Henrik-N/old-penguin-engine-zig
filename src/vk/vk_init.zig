@@ -208,10 +208,13 @@ pub fn defaultRenderPass(context: VkContext, swapchain: Swapchain) !vk.RenderPas
     const subpass_dependency = vk.SubpassDependency{
         .src_subpass = vk.SUBPASS_EXTERNAL, // the implicit subpass before or after the subpass (depending on if it's in src or dst)
         .dst_subpass = 0,
+        //
         .src_stage_mask = .{ .color_attachment_output_bit = true },
         .src_access_mask = .{},
+        //
         .dst_stage_mask = .{ .color_attachment_output_bit = true },
         .dst_access_mask = .{ .color_attachment_write_bit = true },
+        //
         .dependency_flags = .{},
     };
 

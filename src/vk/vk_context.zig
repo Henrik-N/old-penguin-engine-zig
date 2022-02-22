@@ -27,6 +27,8 @@ const InstanceDispatch = vk.InstanceWrapper(.{
     .getPhysicalDeviceQueueFamilyProperties = true,
     .getDeviceProcAddr = true,
     .createDevice = true,
+    .getPhysicalDeviceMemoryProperties = true,
+    .getPhysicalDeviceFeatures = true,
 });
 
 const DeviceDispatch = vk.DeviceWrapper(.{
@@ -68,6 +70,12 @@ const DeviceDispatch = vk.DeviceWrapper(.{
     .queueWaitIdle = true, // temp
     .deviceWaitIdle = true,
     .cmdDraw = true,
+    .createBuffer = true,
+    .destroyBuffer = true,
+    .getBufferMemoryRequirements = true,
+    .getBufferMemoryRequirements2 = true,
+    .allocateMemory = true,
+    .freeMemory = true,
 });
 
 pub const VkContext = struct {

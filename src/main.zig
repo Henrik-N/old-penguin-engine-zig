@@ -7,6 +7,8 @@ const VkContext = @import("vk/vk_context.zig").VkContext;
 const Swapchain = @import("vk/vk_swapchain.zig").Swapchain;
 const PipelineBuilder = @import("vk/vk_pipeline_builder.zig").PipelineBuilder;
 
+const vk_mem = @import("vk/vk_memory.zig");
+
 const ShaderResources = @import("resources");
 
 const vk_init = @import("vk/vk_init.zig");
@@ -30,7 +32,7 @@ pub fn main() !void {
     const context = try VkContext.init(app_name, window, allocator);
     defer context.deinit();
 
-    const swapchain = try Swapchain.init(context, window, allocator);
+    var swapchain = try Swapchain.init(context, window, allocator);
     defer swapchain.deinit(context, allocator);
 
     const vert_shader_module = try vk_init.shaderModule(context, ShaderResources.tri_vert);
@@ -94,14 +96,18 @@ pub fn main() !void {
 
     // sync
     // const fence = try context.vkd.createFence(context.device, &.{ .flags = .{ .signaled_bit = true }, }, null);
-    const render_fence = try vk_init.fence(context, .{ .signaled_bit = true });
-    defer context.vkd.destroyFence(context.device, render_fence, null);
+    // const render_fence = try vk_init.fence(context, .{ .signaled_bit = true });
+    // defer context.vkd.destroyFence(context.device, render_fence, null);
 
-    const image_acquired_semaphore = try vk_init.semaphore(context);
-    defer context.vkd.destroySemaphore(context.device, image_acquired_semaphore, null);
+    // const image_acquired_semaphore = try vk_init.semaphore(context);
+    // defer context.vkd.destroySemaphore(context.device, image_acquired_semaphore, null);
 
-    const render_complete_semaphore = try vk_init.semaphore(context);
-    defer context.vkd.destroySemaphore(context.device, render_complete_semaphore, null);
+    // const render_complete_semaphore = try vk_init.semaphore(context);
+    // defer context.vkd.destroySemaphore(context.device, render_complete_semaphore, null);
+
+
+    const buffer = try vk_mem.createBuffer(context, @sizeOf(u32), .{ .vertex_buffer_bit = true });
+    defer vk_mem.destroyBuffer(context, buffer);
 
     var frame_num: f32 = 0;
 
@@ -109,19 +115,12 @@ pub fn main() !void {
         try glfw.pollEvents();
         frame_num += 1; // TODO overflow check stuff
 
-        //------------- render loop ----------------
-        const timeout = std.math.maxInt(u64); // TODO change timeout?
-        _ = try context.vkd.waitForFences(context.device, 1, @ptrCast([*]const vk.Fence, &render_fence), vk.TRUE, timeout);
-        _ = try context.vkd.resetFences(context.device, 1, @ptrCast([*]const vk.Fence, &render_fence));
-
-        const result = try context.vkd.acquireNextImageKHR(context.device, swapchain.handle, timeout, image_acquired_semaphore, .null_handle);
-        const swapchain_image_index = result.image_index;
-
-        const test_cmd_buf = command_buffers[swapchain_image_index];
+        const command_buffer = command_buffers[swapchain.current_image_index];
 
         {
-            try context.vkd.resetCommandBuffer(test_cmd_buf, .{});
-            try context.vkd.beginCommandBuffer(test_cmd_buf, &.{
+            std.log.info("Frame num: {d}, resetting command buffer", .{@trunc(frame_num)});
+            try context.vkd.resetCommandBuffer(command_buffer, .{ .release_resources_bit = true });
+            try context.vkd.beginCommandBuffer(command_buffer, &.{
                 .flags = .{ .one_time_submit_bit = true },
                 .p_inheritance_info = null, // for secondary command buffers
             });
@@ -136,52 +135,54 @@ pub fn main() !void {
                 .extent = swapchain.extent,
             };
 
-            const render_pass_begin_info = vk.RenderPassBeginInfo{
+            // render pass
+            context.vkd.cmdBeginRenderPass(command_buffer, &.{
                 .render_pass = render_pass,
-                .framebuffer = framebuffers[swapchain_image_index], // temp
+                .framebuffer = framebuffers[swapchain.current_image_index], // temp
                 .render_area = render_area,
                 .clear_value_count = 1,
                 .p_clear_values = @ptrCast([*]const vk.ClearValue, &clear_value),
-            };
-            {
-                // render pass
-                context.vkd.cmdBeginRenderPass(test_cmd_buf, &render_pass_begin_info, .@"inline");
-                defer context.vkd.cmdEndRenderPass(test_cmd_buf);
+            }, .@"inline");
 
-                context.vkd.cmdBindPipeline(test_cmd_buf, vk.PipelineBindPoint.graphics, pipeline);
-                context.vkd.cmdDraw(test_cmd_buf, 3, 1, 0, 0);
-            } // end of render pass
+            context.vkd.cmdBindPipeline(command_buffer, vk.PipelineBindPoint.graphics, pipeline);
+            context.vkd.cmdDraw(command_buffer, 3, 1, 0, 0);
 
-            try context.vkd.endCommandBuffer(test_cmd_buf);
-        } // end of command buffer
+            context.vkd.cmdEndRenderPass(command_buffer);
 
-        const pipeline_wait_stage: vk.PipelineStageFlags = vk.PipelineStageFlags{ .color_attachment_output_bit = true };
+            try context.vkd.endCommandBuffer(command_buffer);
+        }
 
-        const submit_info = vk.SubmitInfo{
-            .wait_semaphore_count = 1,
-            .p_wait_semaphores = @ptrCast([*]const vk.Semaphore, &image_acquired_semaphore),
-            .p_wait_dst_stage_mask = @ptrCast([*]const vk.PipelineStageFlags, &pipeline_wait_stage),
-            .command_buffer_count = 1,
-            .p_command_buffers = @ptrCast([*]const vk.CommandBuffer, &test_cmd_buf),
-            .signal_semaphore_count = 1,
-            .p_signal_semaphores = @ptrCast([*]const vk.Semaphore, &render_complete_semaphore),
-        };
+        // create for each swapchain image
 
-        try context.vkd.queueSubmit(context.graphics_queue.handle, 1, @ptrCast([*]const vk.SubmitInfo, &submit_info), render_fence);
+        try swapchain.submitPresentCommandBuffer(context, command_buffer);
 
-        // TODO THIS IS TEMP
-        try context.vkd.queueWaitIdle(context.graphics_queue.handle);
+        // const pipeline_wait_stage: vk.PipelineStageFlags = vk.PipelineStageFlags{ .color_attachment_output_bit = true };
 
-        const present_info = vk.PresentInfoKHR{
-            .wait_semaphore_count = 1,
-            .p_wait_semaphores = @ptrCast([*]const vk.Semaphore, &render_complete_semaphore),
-            .swapchain_count = 1,
-            .p_swapchains = @ptrCast([*]const vk.SwapchainKHR, &swapchain.handle),
-            .p_image_indices = @ptrCast([*]const u32, &swapchain_image_index),
-            .p_results = null,
-        };
+        // const submit_info = vk.SubmitInfo{
+        //     .wait_semaphore_count = 1,
+        //     .p_wait_semaphores = @ptrCast([*]const vk.Semaphore, &image_acquired_semaphore),
+        //     .p_wait_dst_stage_mask = @ptrCast([*]const vk.PipelineStageFlags, &pipeline_wait_stage),
+        //     .command_buffer_count = 1,
+        //     .p_command_buffers = @ptrCast([*]const vk.CommandBuffer, &test_cmd_buf),
+        //     .signal_semaphore_count = 1,
+        //     .p_signal_semaphores = @ptrCast([*]const vk.Semaphore, &render_complete_semaphore),
+        // };
 
-        _ = try context.vkd.queuePresentKHR(context.present_queue.handle, &present_info);
+        // try context.vkd.queueSubmit(context.graphics_queue.handle, 1, @ptrCast([*]const vk.SubmitInfo, &submit_info), render_fence);
+
+        // // TODO THIS IS TEMP
+        // try context.vkd.queueWaitIdle(context.graphics_queue.handle);
+
+        // const present_info = vk.PresentInfoKHR{
+        //     .wait_semaphore_count = 1,
+        //     .p_wait_semaphores = @ptrCast([*]const vk.Semaphore, &render_complete_semaphore),
+        //     .swapchain_count = 1,
+        //     .p_swapchains = @ptrCast([*]const vk.SwapchainKHR, &swapchain.handle),
+        //     .p_image_indices = @ptrCast([*]const u32, &swapchain_image_index),
+        //     .p_results = null,
+        // };
+
+        // _ = try context.vkd.queuePresentKHR(context.present_queue.handle, &present_info);
     }
 
     try context.vkd.deviceWaitIdle(context.device);
