@@ -11,8 +11,6 @@ fn addShaders(b: *Builder, exe: *LibExeObjStep) void {
     exe.addPackage(res.package);
 }
 
-
-
 pub fn build(b: *Builder) void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
@@ -25,6 +23,7 @@ pub fn build(b: *Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("penguin-engine", "src/main.zig");
+    // const exe = b.addExecutable("penguin-engine", "src/templ_main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();
@@ -32,7 +31,6 @@ pub fn build(b: *Builder) void {
     addGlfw(b, exe);
     addVulkanZig(b, exe);
     addShaders(b, exe);
-
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
@@ -54,7 +52,7 @@ fn addGlfw(b: *Builder, exe: *LibExeObjStep) void {
 fn addVulkanZig(b: *Builder, exe: *LibExeObjStep) void {
     // generate bindings
     const vkgen = @import("vendor/vulkan-zig/generator/index.zig");
-    
+
     const gen = vkgen.VkGenerateStep.init(b, "vendor/vulkan-zig/examples/vk.xml", "vk.zig");
     exe.addPackage(gen.package);
 }

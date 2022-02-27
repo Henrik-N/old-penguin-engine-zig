@@ -3,15 +3,22 @@ const glfw = @import("glfw");
 const vk = @import("vulkan");
 const builtin = @import("builtin");
 
-const VkContext = @import("vk/vk_context.zig").VkContext;
-const Swapchain = @import("vk/vk_swapchain.zig").Swapchain;
-const PipelineBuilder = @import("vk/vk_pipeline_builder.zig").PipelineBuilder;
+const VkContext = @import("vk/VkContext.zig");
+const Swapchain = @import("vk/Swapchain.zig");
+const Vertex = @import("vk/Vertex.zig");
 
 const vk_mem = @import("vk/vk_memory.zig");
-
-const ShaderResources = @import("resources");
+const shader_resources = @import("resources");
 
 const vk_init = @import("vk/vk_init.zig");
+const vk_cmd = @import("vk/vk_cmd.zig");
+
+// triangle
+const mesh = [_]Vertex{
+    .{ .pos = .{ 0, -0.5 }, .color = .{ 1, 0, 0 } },
+    .{ .pos = .{ 0.5, 0.5 }, .color = .{ 0, 1, 0 } },
+    .{ .pos = .{ -0.5, 0.5 }, .color = .{ 0, 0, 1 } },
+};
 
 pub fn main() !void {
     try glfw.init(.{});
@@ -29,20 +36,14 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const context = try VkContext.init(app_name, window, allocator);
+    const context = try VkContext.init(allocator, app_name, window);
     defer context.deinit();
 
-    var swapchain = try Swapchain.init(context, window, allocator);
-    defer swapchain.deinit(context, allocator);
+    var swapchain = try Swapchain.init(allocator, context, window);
+    defer swapchain.deinit(allocator, context);
 
-    const vert_shader_module = try vk_init.shaderModule(context, ShaderResources.tri_vert);
-    defer context.vkd.destroyShaderModule(context.device, vert_shader_module, null);
-
-    const frag_shader_module = try vk_init.shaderModule(context, ShaderResources.tri_frag);
-    defer context.vkd.destroyShaderModule(context.device, frag_shader_module, null);
-
-    // pipeline
-    //
+    const render_pass = try vk_init.defaultRenderPass(context, swapchain.surface_format.format);
+    defer vk_init.destroyRenderPass(context, render_pass);
 
     const pipeline_layout = try context.vkd.createPipelineLayout(context.device, &.{
         .flags = .{},
@@ -53,137 +54,105 @@ pub fn main() !void {
     }, null);
     defer context.vkd.destroyPipelineLayout(context.device, pipeline_layout, null);
 
-    const render_pass = try vk_init.defaultRenderPass(context, swapchain);
-    defer context.vkd.destroyRenderPass(context.device, render_pass, null);
+    const vert = try vk_init.shaderModule(context, shader_resources.tri_vert);
+    defer vk_init.destroyShaderModule(context, vert);
 
-    const pipeline_builder = PipelineBuilder(.{
-        .shader_stage_count = 2,
-        .color_blend_attachment_state_count = 1,
-    }){
-        .shader_stages = .{
-            vk_init.pipeline.shaderStageCreateInfo(.{ .vertex_bit = true }, vert_shader_module),
-            vk_init.pipeline.shaderStageCreateInfo(.{ .fragment_bit = true }, frag_shader_module),
+    const frag = try vk_init.shaderModule(context, shader_resources.tri_frag);
+    defer vk_init.destroyShaderModule(context, frag);
+
+    const pipeline = try vk_init.pipeline(context, .{
+        .shader_modules = .{
+            .vertex = vert,
+            .fragment = frag,
         },
-        .vertex_input_state = vk_init.pipeline.vertexInputStateCreateInfo(),
-        .input_assembly_state = vk_init.pipeline.inputAssemblyStateCreateInfo(vk.PrimitiveTopology.triangle_list),
-        .tesselation_state = null,
-        .viewport = vk_init.pipeline.viewport(swapchain.extent),
-        .scissor = vk_init.pipeline.scissor(swapchain.extent),
-        .rasterization_state = vk_init.pipeline.rasterizationStateCreateInfo(vk.PolygonMode.fill), // .line, .point
-        .multisample_state = vk_init.pipeline.multisampleStateCreateInfo(),
-        .depth_stencil_state = null,
-        .dynamic_state = null,
-        .color_blend_attachment_states = .{
-            vk_init.pipeline.colorBlendAttachmentState(.alpha_blending),
+        .vertex_input = .{
+            .input_bindings = &Vertex.binding_descriptions,
+            .input_attributes = &Vertex.attribute_descriptions,
         },
-        .pipeline_layout = pipeline_layout,
-        .render_pass = render_pass,
-    };
-    const pipeline = try pipeline_builder.init_pipeline(context);
-    defer context.vkd.destroyPipeline(context.device, pipeline, null);
+        .topology = .triangle_list,
+        .polygon_mode = .fill,
+        .color_blending = .alpha_blending,
+    }, pipeline_layout, render_pass);
+    defer vk_init.destroyPipeline(context, pipeline);
 
-    const framebuffers = try vk_init.frameBuffers(allocator, context, render_pass, swapchain);
-    defer allocator.free(framebuffers);
-    defer for (framebuffers) |framebuffer| context.vkd.destroyFramebuffer(context.device, framebuffer, null);
+    var framebuffers = try vk_init.framebuffers(allocator, context, render_pass, swapchain);
+    defer vk_init.destroyFramebuffers(allocator, context, framebuffers);
 
-    // command pool and command buffers
-    // const command_pool = try vk_init.commandPool(context, .{}, context.graphics_queue.family);
-    const command_pool = try vk_init.commandPool(context, .{ .reset_command_buffer_bit = true }, context.graphics_queue.family); // TODO the reset flag is temp
-    defer context.vkd.destroyCommandPool(context.device, command_pool, null);
+    const vertex_buffer = try vk_mem.createBuffer(context, @sizeOf(Vertex) * mesh.len, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
+    const vertex_memory = try vk_mem.allocateBufferMemory(context, vertex_buffer, .gpu_only);
+    defer vk_mem.destroyBuffer(context, vertex_buffer);
+    defer vk_mem.freeMemory(context, vertex_memory);
 
-    const command_buffers = try vk_init.commandBuffers(allocator, context, command_pool, .primary, framebuffers.len);
-    defer allocator.free(command_buffers); // destroys the handles only. The subsequent call to destroyCommandPool will clear up the data.
+    try vk_mem.immediateUpload(context, vertex_buffer, Vertex, &mesh);
 
-    // sync
-    // const fence = try context.vkd.createFence(context.device, &.{ .flags = .{ .signaled_bit = true }, }, null);
-    // const render_fence = try vk_init.fence(context, .{ .signaled_bit = true });
-    // defer context.vkd.destroyFence(context.device, render_fence, null);
-
-    // const image_acquired_semaphore = try vk_init.semaphore(context);
-    // defer context.vkd.destroySemaphore(context.device, image_acquired_semaphore, null);
-
-    // const render_complete_semaphore = try vk_init.semaphore(context);
-    // defer context.vkd.destroySemaphore(context.device, render_complete_semaphore, null);
-
-
-    const buffer = try vk_mem.createBuffer(context, @sizeOf(u32), .{ .vertex_buffer_bit = true });
-    defer vk_mem.destroyBuffer(context, buffer);
-
-    var frame_num: f32 = 0;
+    const command_pool = try vk_init.commandPool(context, .{}, context.graphics_queue.family);
+    defer vk_init.destroyCommandPool(context, command_pool);
 
     while (!window.shouldClose()) {
-        try glfw.pollEvents();
-        frame_num += 1; // TODO overflow check stuff
+        const command_buffer = try swapchain.newRenderCommandsBuffer(context);
 
-        const command_buffer = command_buffers[swapchain.current_image_index];
+        try recordCommands(context, command_buffer, .{
+            .render_pass = render_pass,
+            .framebuffer = framebuffers[swapchain.current_image_index],
+            .pipeline = pipeline,
+            .vertex_buffer = vertex_buffer,
+            .extent = swapchain.extent,
+        });
 
-        {
-            std.log.info("Frame num: {d}, resetting command buffer", .{@trunc(frame_num)});
-            try context.vkd.resetCommandBuffer(command_buffer, .{ .release_resources_bit = true });
-            try context.vkd.beginCommandBuffer(command_buffer, &.{
-                .flags = .{ .one_time_submit_bit = true },
-                .p_inheritance_info = null, // for secondary command buffers
-            });
+        const present_state = swapchain.submitPresentCommandBuffer(context, command_buffer) catch |err| switch (err) {
+            error.OutOfDateKHR => Swapchain.PresentState.suboptimal,
+            else => return err, // unknown error
+        };
 
-            const flash: f32 = std.math.sin(frame_num / 120);
-            const clear_value = vk.ClearValue{
-                .color = .{ .float_32 = .{ 0, 0, flash, 1 } },
-            };
-
-            const render_area = vk.Rect2D{
-                .offset = .{ .x = 0, .y = 0 },
-                .extent = swapchain.extent,
-            };
-
-            // render pass
-            context.vkd.cmdBeginRenderPass(command_buffer, &.{
-                .render_pass = render_pass,
-                .framebuffer = framebuffers[swapchain.current_image_index], // temp
-                .render_area = render_area,
-                .clear_value_count = 1,
-                .p_clear_values = @ptrCast([*]const vk.ClearValue, &clear_value),
-            }, .@"inline");
-
-            context.vkd.cmdBindPipeline(command_buffer, vk.PipelineBindPoint.graphics, pipeline);
-            context.vkd.cmdDraw(command_buffer, 3, 1, 0, 0);
-
-            context.vkd.cmdEndRenderPass(command_buffer);
-
-            try context.vkd.endCommandBuffer(command_buffer);
+        if (present_state == .suboptimal) {
+            // recreate swapchain
+            try swapchain.recreate(allocator, context, window);
+            vk_init.destroyFramebuffers(allocator, context, framebuffers);
+            framebuffers = try vk_init.framebuffers(allocator, context, render_pass, swapchain);
         }
 
-        // create for each swapchain image
-
-        try swapchain.submitPresentCommandBuffer(context, command_buffer);
-
-        // const pipeline_wait_stage: vk.PipelineStageFlags = vk.PipelineStageFlags{ .color_attachment_output_bit = true };
-
-        // const submit_info = vk.SubmitInfo{
-        //     .wait_semaphore_count = 1,
-        //     .p_wait_semaphores = @ptrCast([*]const vk.Semaphore, &image_acquired_semaphore),
-        //     .p_wait_dst_stage_mask = @ptrCast([*]const vk.PipelineStageFlags, &pipeline_wait_stage),
-        //     .command_buffer_count = 1,
-        //     .p_command_buffers = @ptrCast([*]const vk.CommandBuffer, &test_cmd_buf),
-        //     .signal_semaphore_count = 1,
-        //     .p_signal_semaphores = @ptrCast([*]const vk.Semaphore, &render_complete_semaphore),
-        // };
-
-        // try context.vkd.queueSubmit(context.graphics_queue.handle, 1, @ptrCast([*]const vk.SubmitInfo, &submit_info), render_fence);
-
-        // // TODO THIS IS TEMP
-        // try context.vkd.queueWaitIdle(context.graphics_queue.handle);
-
-        // const present_info = vk.PresentInfoKHR{
-        //     .wait_semaphore_count = 1,
-        //     .p_wait_semaphores = @ptrCast([*]const vk.Semaphore, &render_complete_semaphore),
-        //     .swapchain_count = 1,
-        //     .p_swapchains = @ptrCast([*]const vk.SwapchainKHR, &swapchain.handle),
-        //     .p_image_indices = @ptrCast([*]const u32, &swapchain_image_index),
-        //     .p_results = null,
-        // };
-
-        // _ = try context.vkd.queuePresentKHR(context.present_queue.handle, &present_info);
+        try glfw.pollEvents();
     }
 
-    try context.vkd.deviceWaitIdle(context.device);
+    try swapchain.waitForAllFences(context);
+}
+
+const RecordCommandsParams = struct {
+    render_pass: vk.RenderPass,
+    framebuffer: vk.Framebuffer,
+    pipeline: vk.Pipeline,
+    vertex_buffer: vk.Buffer,
+    extent: vk.Extent2D,
+};
+
+fn recordCommands(context: VkContext, command_buffer: vk.CommandBuffer, params: RecordCommandsParams) !void {
+    const viewport = vk_init.viewport(params.extent);
+    const scissor = vk_init.scissor(params.extent);
+
+    const cmd = try vk_cmd.CommandBufferRecorder.begin(context, command_buffer, .{ .one_time_submit_bit = true });
+
+    cmd.setViewport(viewport);
+    cmd.setScissor(scissor);
+
+    cmd.beginRenderPass(.{
+        .extent = params.extent,
+        .clear_color = [_]f32{ 0, 0, 0, 1 },
+        .render_pass = params.render_pass,
+        .framebuffer = params.framebuffer,
+    });
+
+    cmd.bindPipeline(params.pipeline, .graphics);
+
+    cmd.bindVertexBuffers(.{ .first_binding = 0, .vertex_buffers = &.{params.vertex_buffer}, .offsets = &.{0} });
+
+    cmd.draw(.{
+        .vertex_count = mesh.len,
+        .instance_count = 1,
+        .first_vertex = 0,
+        .first_instance = 0,
+    });
+
+    cmd.endRenderPass();
+
+    try cmd.end();
 }
