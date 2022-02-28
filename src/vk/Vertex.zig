@@ -25,29 +25,3 @@ pub const attribute_descriptions = [_]vk.VertexInputAttributeDescription{
         .offset = @offsetOf(Vertex, "color"),
     },
 };
-
-// const Vertex = struct {
-//     const binding_descriptions = [_]vk.VertexInputBindingDescription{.{
-//         .binding = 0,
-//         .stride = @sizeOf(Vertex),
-//         .input_rate = .vertex,
-//     }};
-//
-//     const attribute_descriptions = [_]vk.VertexInputAttributeDescription{
-//         .{
-//             .binding = 0,
-//             .location = 0,
-//             .format = .r32g32_sfloat,
-//             .offset = @offsetOf(Vertex, "pos"),
-//         },
-//         .{
-//             .binding = 0,
-//             .location = 1,
-//             .format = .r32g32b32_sfloat,
-//             .offset = @offsetOf(Vertex, "color"),
-//         },
-//     };
-//
-//     pos: [2]f32,
-//     color: [3]f32,
-// };

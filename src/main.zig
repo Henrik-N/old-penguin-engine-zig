@@ -139,10 +139,6 @@ fn recordCommands(context: VkContext, command_buffer: vk.CommandBuffer, params: 
             .{ .color = .{ .float_32 = .{ 0, 0, 0, 1 } } },
             .{ .depth_stencil = .{ .depth = 1, .stencil = undefined } },
         },
-        // const clear_value = vk.ClearValue{
-        //     .color = .{ .float_32 = params.clear_color },
-        // };
-        // .clear_color = [_]f32{ 0, 0, 0, 1 },
         .render_pass = params.render_pass,
         .framebuffer = params.framebuffer,
     });

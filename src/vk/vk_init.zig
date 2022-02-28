@@ -414,36 +414,3 @@ pub fn imageView(context: VkContext, image: vk.Image, format: vk.Format, aspect_
 pub fn destroyImageView(context: VkContext, image_view: vk.ImageView) void {
     context.vkd.destroyImageView(context.device, image_view, null);
 }
-
-// pub fn image(context: VkContext, format: vk.Format, usage: vk.ImageUsageFlags, extent: vk.Extent3D) !vk.Image {
-//     context.vkd.createImage(device: Device, p_create_info: *const ImageCreateInfo, p_allocator: ?*const AllocationCallbacks)
-//     context.vkd.createImage(context.device, &.{
-//         .flags = .{},
-//         .image_type = .@"2d",
-//         .format = format,
-//         .extent = extent,
-//         .mip_levels = 1,
-//         .array_layers = 1,
-//         .samples = @"1_bit",
-//         .tiling = .{ .tiling_optimal_bit = true }, // TODO check that the physical device supports optimal tiling
-//         .usage = usage,
-//         .sharing_mode = .exclusive,
-//         .
-//
-//         s_type: StructureType = .image_create_info,
-//         p_next: ?*const anyopaque = null,
-//         flags: ImageCreateFlags,
-//         image_type: ImageType,
-//         format: Format,
-//         extent: Extent3D,
-//         mip_levels: u32,
-//         array_layers: u32,
-//         samples: SampleCountFlags,
-//         tiling: ImageTiling,
-//         usage: ImageUsageFlags,
-//         sharing_mode: SharingMode,
-//         queue_family_index_count: u32,
-//         p_queue_family_indices: [*]const u32,
-//         initial_layout: ImageLayout,
-//     }, null);
-// }
