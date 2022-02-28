@@ -142,13 +142,13 @@ fn debugMessengerCallback(
         const msg = callback_data.p_message;
 
         if (severity.contains(.{ .info_bit_ext = true })) {
-            std.log.info("{s}{s}", .{ prefix, msg });
+            std.log.info("{s}{s}\n", .{ prefix, msg });
         } else if (severity.contains(.{ .warning_bit_ext = true })) {
-            std.log.warn("{s}{s}", .{ prefix, msg });
+            std.log.warn("{s}{s}\n", .{ prefix, msg });
         } else if (severity.contains(.{ .error_bit_ext = true })) {
-            std.log.err("{s}{s}", .{ prefix, msg });
+            std.log.err("{s}{s}\n", .{ prefix, msg });
         } else {
-            std.log.err("(Unknown severity) {s}{s}", .{ prefix, callback_data.p_message });
+            std.log.err("(Unknown severity) {s}{s}\n", .{ prefix, callback_data.p_message });
         }
     }
 
@@ -364,8 +364,8 @@ fn initDevice(vki: InstanceDispatch, pd: vk.PhysicalDevice, device_extensions: [
         .flags = .{},
         .queue_create_info_count = queue_count,
         .p_queue_create_infos = &queues_create_info,
-        .enabled_layer_count = 0,
-        .pp_enabled_layer_names = undefined,
+        .enabled_layer_count = 0, // legacy
+        .pp_enabled_layer_names = undefined, // legacy
         .enabled_extension_count = @intCast(u32, device_extensions.len),
         .pp_enabled_extension_names = @ptrCast([*]const [*:0]const u8, device_extensions.ptr),
         .p_enabled_features = null,

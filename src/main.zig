@@ -32,6 +32,7 @@ pub fn main() !void {
     });
     defer window.destroy();
 
+    //var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -42,17 +43,15 @@ pub fn main() !void {
     var swapchain = try Swapchain.init(allocator, context, window);
     defer swapchain.deinit(allocator, context);
 
-    const render_pass = try vk_init.defaultRenderPass(context, swapchain.surface_format.format);
+    const render_pass = try vk_init.defaultRenderPass(context, swapchain.surface_format.format, swapchain.depth_image.format);
     defer vk_init.destroyRenderPass(context, render_pass);
 
-    const pipeline_layout = try context.vkd.createPipelineLayout(context.device, &.{
+    const pipeline_layout = try vk_init.pipelineLayout(context, .{
         .flags = .{},
-        .set_layout_count = 0,
-        .p_set_layouts = undefined,
-        .push_constant_range_count = 0,
-        .p_push_constant_ranges = undefined,
-    }, null);
-    defer context.vkd.destroyPipelineLayout(context.device, pipeline_layout, null);
+        .set_layouts = &.{},
+        .push_constant_ranges = &.{},
+    });
+    defer vk_init.destroyPipelineLayout(context, pipeline_layout);
 
     const vert = try vk_init.shaderModule(context, shader_resources.tri_vert);
     defer vk_init.destroyShaderModule(context, vert);
@@ -136,7 +135,14 @@ fn recordCommands(context: VkContext, command_buffer: vk.CommandBuffer, params: 
 
     cmd.beginRenderPass(.{
         .extent = params.extent,
-        .clear_color = [_]f32{ 0, 0, 0, 1 },
+        .clear_values = &.{
+            .{ .color = .{ .float_32 = .{ 0, 0, 0, 1 } } },
+            .{ .depth_stencil = .{ .depth = 1, .stencil = undefined } },
+        },
+        // const clear_value = vk.ClearValue{
+        //     .color = .{ .float_32 = params.clear_color },
+        // };
+        // .clear_color = [_]f32{ 0, 0, 0, 1 },
         .render_pass = params.render_pass,
         .framebuffer = params.framebuffer,
     });

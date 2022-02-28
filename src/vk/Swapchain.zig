@@ -2,10 +2,10 @@ const std = @import("std");
 const vk = @import("vulkan");
 const glfw = @import("glfw");
 const VkContext = @import("VkContext.zig");
-const vk_init = @import("vk_init.zig");
 const mem = std.mem;
 
-const vk_memory = @import("vk_memory.zig");
+const vk_init = @import("vk_init.zig");
+const vk_mem = @import("vk_memory.zig");
 const vk_sync = @import("vk_sync.zig");
 const vk_enumerate = @import("vk_enumerate.zig");
 
@@ -19,6 +19,8 @@ extent: vk.Extent2D,
 
 images: []SwapImage,
 current_image_index: usize,
+
+depth_image: DepthImage,
 
 // Semaphore that will get signaled once we've gotten the next image from the swapchain.
 // We signal this when getting the image and then set it as the semaphore for the current image.
@@ -94,6 +96,9 @@ fn initInner(
         allocator.free(images);
     }
 
+    const depth_image = try DepthImage.init(context, true_extent);
+    errdefer depth_image.deinit(context);
+
     // By acquiring the first image here, we can simplify the interface of the swapchain.
     //
     // If you want to reference the current image while rendering, at the beginning of the
@@ -137,6 +142,7 @@ fn initInner(
         .extent = true_extent,
         .images = images,
         .current_image_index = current_image_index,
+        .depth_image = depth_image,
         .next_image_acquired_semaphore = next_image_acquired_semaphore,
         .render_commands_pool = render_commands_pool,
         .render_command_buffers = render_command_buffers,
@@ -157,6 +163,8 @@ pub fn recreate(self: *Swapchain, allocator: mem.Allocator, context: VkContext, 
 }
 
 fn deinitExceptHandle(self: Swapchain, allocator: mem.Allocator, context: VkContext) void {
+    self.depth_image.deinit(context);
+
     for (self.render_command_buffers) |cmd_buffer| {
         vk_init.freeCommandBuffer(context, self.render_commands_pool, cmd_buffer);
     }
@@ -254,22 +262,7 @@ pub const SwapImage = struct {
     render_frame_fence: vk.Fence, // signaled when the frame has finished rendering
 
     fn init(context: VkContext, image: vk.Image, format: vk.Format) !SwapImage {
-        const image_view_create_info = vk.ImageViewCreateInfo{
-            .flags = .{},
-            .image = image,
-            .view_type = .@"2d",
-            .format = format,
-            .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
-            .subresource_range = .{
-                .aspect_mask = .{ .color_bit = true },
-                .base_mip_level = 0,
-                .level_count = 1,
-                .base_array_layer = 0,
-                .layer_count = 1,
-            },
-        };
-
-        const image_view = try context.vkd.createImageView(context.device, &image_view_create_info, null);
+        const image_view = try vk_init.imageView(context, image, format, .{ .color_bit = true });
         errdefer context.vkd.destroyImageView(context.device, image_view, null);
 
         const image_acquired_semaphore = try vk_init.semaphore(context);
@@ -304,6 +297,78 @@ pub const SwapImage = struct {
     fn waitForRenderFrameFence(self: SwapImage, context: VkContext) !void {
         const timeout = std.math.maxInt(u64); // TODO only one render frame fence?
         _ = try context.vkd.waitForFences(context.device, 1, @ptrCast([*]const vk.Fence, &self.render_frame_fence), vk.TRUE, timeout);
+    }
+};
+
+pub const DepthImage = struct {
+    image: vk.Image,
+    image_memory: vk.DeviceMemory,
+    image_view: vk.ImageView,
+    format: vk.Format,
+
+    const Self = @This();
+
+    fn init(context: VkContext, extent: vk.Extent2D) !Self {
+        // ordered from most desirable to least desirable
+        // NOTE The order of this should change if using a stencil component is desired.
+        const format_priorities = [_]vk.Format{
+            .d32_sfloat,
+            .d32_sfloat_s8_uint,
+            .d24_unorm_s8_uint,
+        };
+
+        const tiling: vk.ImageTiling = .optimal;
+
+        const depth_format = try findSupportedFormat(context, &format_priorities, tiling, .{ .depth_stencil_attachment_bit = true });
+
+        const image = try vk_mem.createImage(context, .{
+            .extent = .{
+                .width = extent.width,
+                .height = extent.height,
+                .depth = 1,
+            },
+            .format = depth_format,
+            .tiling = tiling,
+            .usage = .{ .depth_stencil_attachment_bit = true },
+        });
+        errdefer vk_mem.destroyImage(context, image);
+
+        const memory = try vk_mem.allocateImageMemory(context, image, .gpu_only);
+        errdefer vk_mem.freeMemory(context, memory);
+
+        const image_view = try vk_init.imageView(context, image, depth_format, .{ .depth_bit = true });
+        errdefer vk_init.destroyImageView(image_view);
+
+        return Self{
+            .image = image,
+            .image_memory = memory,
+            .image_view = image_view,
+            .format = depth_format,
+        };
+    }
+
+    fn deinit(self: Self, context: VkContext) void {
+        vk_init.destroyImageView(context, self.image_view);
+        vk_mem.destroyImage(context, self.image);
+        vk_mem.freeMemory(context, self.image_memory);
+    }
+
+    fn findSupportedFormat(context: VkContext, format_priority_list: []const vk.Format, tiling: vk.ImageTiling, features: vk.FormatFeatureFlags) !vk.Format {
+        for (format_priority_list) |format| {
+            const pd_format_properties: vk.FormatProperties = context.vki.getPhysicalDeviceFormatProperties(context.physical_device, format);
+
+            const is_supported = switch (tiling) {
+                .optimal => pd_format_properties.optimal_tiling_features.contains(features),
+                .linear => pd_format_properties.linear_tiling_features.contains(features),
+                else => unreachable,
+            };
+
+            if (is_supported) {
+                return format;
+            }
+        }
+
+        return error.NoSupportedFormat;
     }
 };
 

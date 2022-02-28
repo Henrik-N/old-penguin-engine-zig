@@ -79,17 +79,12 @@ pub const CommandBufferRecorder = struct {
 
     pub const BeginRenderPassParams = struct {
         extent: vk.Extent2D,
-        clear_color: [4]f32,
-
+        clear_values: []const vk.ClearValue,
         render_pass: vk.RenderPass,
         framebuffer: vk.Framebuffer,
     };
 
     pub fn beginRenderPass(self: Self, params: BeginRenderPassParams) void {
-        const clear_value = vk.ClearValue{
-            .color = .{ .float_32 = params.clear_color },
-        };
-
         const render_area = vk.Rect2D{
             .offset = .{
                 .x = 0,
@@ -102,8 +97,10 @@ pub const CommandBufferRecorder = struct {
             .render_pass = params.render_pass,
             .framebuffer = params.framebuffer,
             .render_area = render_area,
-            .clear_value_count = 1,
-            .p_clear_values = @ptrCast([*]const vk.ClearValue, &clear_value),
+            // .clear_value_count = @intCast(u32, clear_values.len),
+            // .p_clear_values = @ptrCast([*]const vk.ClearValue, &clear_values),
+            .clear_value_count = @intCast(u32, params.clear_values.len),
+            .p_clear_values = @ptrCast([*]const vk.ClearValue, params.clear_values.ptr),
         }, .@"inline");
     }
 

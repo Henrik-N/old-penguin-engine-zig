@@ -85,7 +85,38 @@ pub fn multisampleState() vk.PipelineMultisampleStateCreateInfo {
     };
 }
 
-// TODO depth/stencil tests configuration
+pub const DepthStencilStateParams = struct {
+    depth_test_enable: bool,
+    depth_write_enable: bool,
+    compare_op: ?vk.CompareOp, // necessary if enable_depth_test == true
+};
+
+pub fn depthStencilState(params: DepthStencilStateParams) vk.PipelineDepthStencilStateCreateInfo {
+    // this isn't used at all, just need something to put in the create struct below
+    const ignored_stencil_state = vk.StencilOpState{
+        .fail_op = .zero,
+        .pass_op = .zero,
+        .depth_fail_op = .zero,
+        .compare_op = .never,
+        .compare_mask = 0,
+        .write_mask = 0,
+        .reference = 0,
+    };
+
+    return .{
+        .flags = .{},
+        .depth_test_enable = if (params.depth_test_enable) vk.TRUE else vk.FALSE,
+        .depth_write_enable = if (params.depth_write_enable) vk.TRUE else vk.FALSE,
+        .depth_compare_op = if (params.depth_test_enable) params.compare_op.? else vk.CompareOp.always,
+        //
+        .depth_bounds_test_enable = vk.FALSE,
+        .stencil_test_enable = vk.FALSE,
+        .front = ignored_stencil_state, // optional
+        .back = ignored_stencil_state, // // optional
+        .min_depth_bounds = 0, // optional
+        .max_depth_bounds = 1, // optional
+    };
+}
 
 /// Framebuffer-specific configuration for how to blend the color returned from a fragment shader with the color already present in the framebuffer.
 /// Either mix the colors or completely replace the one that is already there.

@@ -72,7 +72,7 @@ pub fn destroyRenderPass(context: VkContext, render_pass: vk.RenderPass) void {
     context.vkd.destroyRenderPass(context.device, render_pass, null);
 }
 
-pub fn defaultRenderPass(context: VkContext, surface_format: vk.Format) !vk.RenderPass {
+pub fn defaultRenderPass(context: VkContext, surface_format: vk.Format, depth_format: vk.Format) !vk.RenderPass {
     const attachments = [_]vk.AttachmentDescription{
         // color attachment
         .{
@@ -88,6 +88,23 @@ pub fn defaultRenderPass(context: VkContext, surface_format: vk.Format) !vk.Rend
             .initial_layout = .@"undefined", // we clear it anyway
             .final_layout = .present_src_khr, // ready image for presentation in the swapchain
         },
+        // depth attachment
+        .{
+            .flags = .{},
+            .format = depth_format,
+            .samples = .{ .@"1_bit" = true },
+            .load_op = .clear,
+            .store_op = .store,
+            .stencil_load_op = .dont_care,
+            .stencil_store_op = .dont_care,
+            .initial_layout = .@"undefined",
+            .final_layout = .depth_stencil_attachment_optimal,
+        },
+    };
+
+    const depth_attachment_ref = vk.AttachmentReference{
+        .attachment = 1,
+        .layout = .depth_stencil_attachment_optimal,
     };
 
     return try vk_init.renderPass(context, .{
@@ -101,22 +118,36 @@ pub fn defaultRenderPass(context: VkContext, surface_format: vk.Format) !vk.Rend
                 .attachment = 0,
                 .layout = .color_attachment_optimal,
             }},
-            .depth_attachment_ref = null,
+            .depth_attachment_ref = &depth_attachment_ref,
             .resolve_attachment_refs = &.{},
             .preserve_attachments = &.{},
         })},
-        .subpass_dependencies = &.{.{
-            .src_subpass = vk.SUBPASS_EXTERNAL, // the implicit subpass before or after the subpass (depending on if it's in src or dst)
-            .dst_subpass = 0,
-            //
-            .src_stage_mask = .{ .color_attachment_output_bit = true },
-            .src_access_mask = .{},
-            //
-            .dst_stage_mask = .{ .color_attachment_output_bit = true },
-            .dst_access_mask = .{ .color_attachment_write_bit = true },
-            //
-            .dependency_flags = .{},
-        }},
+        .subpass_dependencies = &.{
+            .{ // color depedency subpass 0
+                .src_subpass = vk.SUBPASS_EXTERNAL, // the implicit subpass before or after the subpass (depending on if it's in src or dst)
+                .dst_subpass = 0,
+                //
+                .src_stage_mask = .{ .color_attachment_output_bit = true },
+                .src_access_mask = .{},
+                //
+                .dst_stage_mask = .{ .color_attachment_output_bit = true },
+                .dst_access_mask = .{ .color_attachment_write_bit = true },
+                //
+                .dependency_flags = .{},
+            },
+            .{ // depth depedency subpass 0
+                .src_subpass = vk.SUBPASS_EXTERNAL,
+                .dst_subpass = 0,
+                //
+                .src_stage_mask = .{ .early_fragment_tests_bit = true }, // .late_fragment_tests_bit = true },
+                .src_access_mask = .{},
+                //
+                .dst_stage_mask = .{ .early_fragment_tests_bit = true },
+                .dst_access_mask = .{ .depth_stencil_attachment_write_bit = true },
+                //
+                .dependency_flags = .{},
+            },
+        },
     });
 }
 
@@ -141,28 +172,45 @@ pub fn destroyPipelineLayout(context: VkContext, pipeline_layout: vk.PipelineLay
     context.vkd.destroyPipelineLayout(context.device, pipeline_layout, null);
 }
 
+pub const InitFramebufferParams = struct {
+    flags: vk.FramebufferCreateFlags,
+    render_pass: vk.RenderPass,
+    attachments: []const vk.ImageView,
+    extent: vk.Extent2D,
+    layer_count: u32, // number of layers in the image arrays
+};
+
+pub fn framebuffer(context: VkContext, params: InitFramebufferParams) !vk.Framebuffer {
+    return try context.vkd.createFramebuffer(context.device, &.{
+        .flags = .{},
+        .render_pass = params.render_pass,
+        .attachment_count = @intCast(u32, params.attachments.len),
+        .p_attachments = @ptrCast([*]const vk.ImageView, params.attachments.ptr),
+        .width = params.extent.width,
+        .height = params.extent.height,
+        .layers = params.layer_count,
+    }, null);
+}
+
 pub fn framebuffers(allocator: Allocator, context: VkContext, render_pass: vk.RenderPass, swapchain: Swapchain) ![]vk.Framebuffer {
     const framebuffers_ = try allocator.alloc(vk.Framebuffer, swapchain.images.len);
     errdefer allocator.free(framebuffers_);
 
     var initialized_count: usize = 0;
-    errdefer for (framebuffers_[0..initialized_count]) |framebuffer| context.vkd.destroyFramebuffer(context.device, framebuffer, null);
-
-    const framebuffer_width = swapchain.extent.width;
-    const framebuffer_height = swapchain.extent.height;
+    errdefer for (framebuffers_[0..initialized_count]) |framebuffer_| context.vkd.destroyFramebuffer(context.device, framebuffer_, null);
 
     for (swapchain.images) |swap_image| {
-        const framebuffer_create_info = vk.FramebufferCreateInfo{
+        framebuffers_[initialized_count] = try vk_init.framebuffer(context, .{
             .flags = .{},
             .render_pass = render_pass,
-            .attachment_count = 1,
-            .p_attachments = @ptrCast([*]const vk.ImageView, &swap_image.image_view),
-            .width = framebuffer_width,
-            .height = framebuffer_height,
-            .layers = 1, // number of layers in the image arrays
-        };
+            .attachments = &.{
+                swap_image.image_view,
+                swapchain.depth_image.image_view,
+            },
+            .extent = swapchain.extent,
+            .layer_count = 1,
+        });
 
-        framebuffers_[initialized_count] = try context.vkd.createFramebuffer(context.device, &framebuffer_create_info, null);
         initialized_count += 1;
     }
 
@@ -274,7 +322,11 @@ pub fn pipeline(context: VkContext, config: PipelineConfig, pipeline_layout: vk.
 
     const multisampling = create_info.multisampleState();
 
-    // const depth_stencil =
+    const depth_stencil = create_info.depthStencilState(.{
+        .depth_test_enable = true,
+        .depth_write_enable = true,
+        .compare_op = .less_or_equal,
+    });
 
     const color_blend_attachments = [_]vk.PipelineColorBlendAttachmentState{create_info.colorBlendAttachmentState(config.color_blending)};
     const color_blend = create_info.colorBlendState(&color_blend_attachments);
@@ -294,7 +346,8 @@ pub fn pipeline(context: VkContext, config: PipelineConfig, pipeline_layout: vk.
         .p_viewport_state = &viewport_,
         .p_rasterization_state = &rasterization,
         .p_multisample_state = &multisampling,
-        .p_depth_stencil_state = null,
+        //.p_depth_stencil_state = null,
+        .p_depth_stencil_state = &depth_stencil,
         .p_color_blend_state = &color_blend,
         .p_dynamic_state = &dynamic_state,
         //
@@ -334,3 +387,63 @@ pub fn scissor(extent: vk.Extent2D) vk.Rect2D {
         .extent = extent,
     };
 }
+
+pub fn imageView(context: VkContext, image: vk.Image, format: vk.Format, aspect_mask: vk.ImageAspectFlags) !vk.ImageView {
+    const create_info = vk.ImageViewCreateInfo{
+        .flags = .{},
+        .image = image,
+        .view_type = .@"2d",
+        .format = format,
+        .components = .{
+            .r = .identity,
+            .g = .identity,
+            .b = .identity,
+            .a = .identity,
+        },
+        .subresource_range = .{
+            .aspect_mask = aspect_mask,
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+    };
+    return try context.vkd.createImageView(context.device, &create_info, null);
+}
+
+pub fn destroyImageView(context: VkContext, image_view: vk.ImageView) void {
+    context.vkd.destroyImageView(context.device, image_view, null);
+}
+
+// pub fn image(context: VkContext, format: vk.Format, usage: vk.ImageUsageFlags, extent: vk.Extent3D) !vk.Image {
+//     context.vkd.createImage(device: Device, p_create_info: *const ImageCreateInfo, p_allocator: ?*const AllocationCallbacks)
+//     context.vkd.createImage(context.device, &.{
+//         .flags = .{},
+//         .image_type = .@"2d",
+//         .format = format,
+//         .extent = extent,
+//         .mip_levels = 1,
+//         .array_layers = 1,
+//         .samples = @"1_bit",
+//         .tiling = .{ .tiling_optimal_bit = true }, // TODO check that the physical device supports optimal tiling
+//         .usage = usage,
+//         .sharing_mode = .exclusive,
+//         .
+//
+//         s_type: StructureType = .image_create_info,
+//         p_next: ?*const anyopaque = null,
+//         flags: ImageCreateFlags,
+//         image_type: ImageType,
+//         format: Format,
+//         extent: Extent3D,
+//         mip_levels: u32,
+//         array_layers: u32,
+//         samples: SampleCountFlags,
+//         tiling: ImageTiling,
+//         usage: ImageUsageFlags,
+//         sharing_mode: SharingMode,
+//         queue_family_index_count: u32,
+//         p_queue_family_indices: [*]const u32,
+//         initial_layout: ImageLayout,
+//     }, null);
+// }

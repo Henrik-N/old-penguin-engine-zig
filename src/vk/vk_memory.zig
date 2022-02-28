@@ -56,17 +56,6 @@ pub const AllocatedBuffer = struct {
         destroyBuffer(context, self.buffer);
         freeMemory(context, self.memory);
     }
-
-    /// Creates an allocates a staging buffer
-    pub fn initStaging(context: VkContext, size: vk.DeviceSize) !Self {
-        const buffer = try vk_mem.createBuffer(context, size, .{ .transfer_src_bit = true });
-        const memory = try vk_mem.allocateBufferMemory(context, buffer, .cpu_gpu_visible);
-
-        return Self{
-            .buffer = buffer,
-            .memory = memory,
-        };
-    }
 };
 
 /// Immediately uploads data to a gpu buffer.
@@ -147,6 +136,58 @@ pub fn allocateBufferMemory2(context: VkContext, buffer: vk.Buffer, memory_prope
 
     const memory_offset = 0;
     try context.vkd.bindBufferMemory(context.device, buffer, memory, memory_offset);
+
+    return memory;
+}
+
+pub const CreateImageParams = struct {
+    extent: vk.Extent3D,
+    format: vk.Format,
+    tiling: vk.ImageTiling,
+    usage: vk.ImageUsageFlags,
+};
+
+pub fn createImage(context: VkContext, params: CreateImageParams) !vk.Image {
+    return try context.vkd.createImage(context.device, &.{
+        .flags = .{},
+        .image_type = .@"2d",
+        .format = params.format,
+        .extent = params.extent,
+        .mip_levels = 1,
+        .array_layers = 1,
+        .samples = .{ .@"1_bit" = true },
+        .tiling = params.tiling,
+        .usage = params.usage,
+        .sharing_mode = .exclusive,
+        // these are for if sharing_mode is concurrent
+        .queue_family_index_count = 0,
+        .p_queue_family_indices = undefined,
+        .initial_layout = .@"undefined",
+    }, null);
+}
+
+pub fn destroyImage(context: VkContext, image_: vk.Image) void {
+    context.vkd.destroyImage(context.device, image_, null);
+}
+
+pub fn allocateImageMemory(context: VkContext, image: vk.Image, memory_type: MemoryType) !vk.DeviceMemory {
+    return try allocateImageMemory2(context, image, memory_type.propertyFlags());
+}
+
+pub fn allocateImageMemory2(context: VkContext, image: vk.Image, memory_property_flags: vk.MemoryPropertyFlags) !vk.DeviceMemory {
+    const mem_reqs = context.vkd.getImageMemoryRequirements(context.device, image);
+    const mem_type_index = try findMemoryTypeIndex(context, mem_reqs.memory_type_bits, memory_property_flags);
+
+    const mem_alloc_info = vk.MemoryAllocateInfo{
+        .allocation_size = mem_reqs.size,
+        .memory_type_index = mem_type_index,
+    };
+
+    const memory = try context.vkd.allocateMemory(context.device, &mem_alloc_info, null);
+    errdefer freeMemory(context, memory);
+
+    const memory_offset = 0;
+    try context.vkd.bindImageMemory(context.device, image, memory, memory_offset);
 
     return memory;
 }

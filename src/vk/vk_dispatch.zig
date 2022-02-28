@@ -22,6 +22,7 @@ pub const InstanceDispatch = vk.InstanceWrapper(.{
     .createDevice = true,
     .getPhysicalDeviceMemoryProperties = true,
     .getPhysicalDeviceFeatures = true,
+    .getPhysicalDeviceFormatProperties = true,
 });
 
 pub const DeviceDispatch = vk.DeviceWrapper(.{
@@ -78,4 +79,8 @@ pub const DeviceDispatch = vk.DeviceWrapper(.{
     .cmdSetViewport = true,
     .cmdSetScissor = true,
     .cmdCopyBuffer = true,
+    .createImage = true,
+    .destroyImage = true,
+    .getImageMemoryRequirements = true,
+    .bindImageMemory = true,
 });
