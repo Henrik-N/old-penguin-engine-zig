@@ -1,5 +1,5 @@
 const vk = @import("vulkan");
-// const VkContext = @import("vk_context.zig").VkContext;
+const zk = @import("zulkan.zig");
 const VkContext = @import("VkContext.zig");
 
 const Swapchain = @import("Swapchain.zig");
@@ -9,68 +9,59 @@ const vk_mem = @import("vk_memory.zig");
 
 const vk_init = @This();
 
-pub fn shaderModule(context: VkContext, comptime shader_source: []const u8) !vk.ShaderModule {
-    const shader_module = try context.vkd.createShaderModule(context.device, &.{
-        .flags = .{},
-        .code_size = shader_source.len,
-        .p_code = @ptrCast([*]const u32, shader_source),
-    }, null);
-    return shader_module;
-}
+pub const SimpleImageCreateInfo = struct {
+    extent: vk.Extent3D,
+    format: vk.Format,
+    tiling: vk.ImageTiling,
+    usage: vk.ImageUsageFlags,
 
-pub fn destroyShaderModule(context: VkContext, shader_module: vk.ShaderModule) void {
-    context.vkd.destroyShaderModule(context.device, shader_module, null);
-}
-
-pub const SubpassDescriptionParams = struct {
-    flags: vk.SubpassDescriptionFlags,
-    pipeline_bind_point: vk.PipelineBindPoint,
-    input_attachment_refs: []const vk.AttachmentReference,
-    color_attachment_refs: []const vk.AttachmentReference,
-    depth_attachment_ref: ?*const vk.AttachmentReference,
-    resolve_attachment_refs: []const vk.AttachmentReference, // optional
-    preserve_attachments: []const u32,
+    pub fn raw(self: SimpleImageCreateInfo) vk.ImageCreateInfo {
+        return vk.ImageCreateInfo{
+            .flags = .{},
+            .image_type = .@"2d",
+            .format = self.format,
+            .extent = self.extent,
+            .mip_levels = 1,
+            .array_layers = 1,
+            .samples = .{ .@"1_bit" = true },
+            .tiling = self.tiling,
+            .usage = self.usage,
+            .sharing_mode = .exclusive,
+            // these are for if sharing_mode is concurrent
+            .queue_family_index_count = 0,
+            .p_queue_family_indices = undefined,
+            .initial_layout = .@"undefined",
+        };
+    }
 };
 
-pub fn subpassDescription(params: SubpassDescriptionParams) vk.SubpassDescription {
-    return vk.SubpassDescription{
-        .flags = params.flags,
-        .pipeline_bind_point = params.pipeline_bind_point,
-        .input_attachment_count = @intCast(u32, params.input_attachment_refs.len),
-        .p_input_attachments = @ptrCast([*]const vk.AttachmentReference, params.input_attachment_refs.ptr),
-        .color_attachment_count = @intCast(u32, params.color_attachment_refs.len),
-        .p_color_attachments = @ptrCast([*]const vk.AttachmentReference, params.color_attachment_refs.ptr),
-        .p_resolve_attachments = @ptrCast([*]const vk.AttachmentReference, params.resolve_attachment_refs.ptr),
-        .p_depth_stencil_attachment = params.depth_attachment_ref,
-        .preserve_attachment_count = @intCast(u32, params.preserve_attachments.len),
-        .p_preserve_attachments = @ptrCast([*]const u32, params.preserve_attachments.ptr),
-    };
-}
+pub const SimpleImageViewCreateInfo = struct {
+    image: vk.Image,
+    format: vk.Format,
+    aspect_mask: vk.ImageAspectFlags,
 
-pub const InitRenderPassParams = struct {
-    p_next: ?*anyopaque = null,
-    flags: vk.RenderPassCreateFlags,
-    attachments: []const vk.AttachmentDescription,
-    subpasses: []const vk.SubpassDescription,
-    subpass_dependencies: []const vk.SubpassDependency,
+    pub fn raw(self: SimpleImageViewCreateInfo) vk.ImageViewCreateInfo {
+        return .{
+            .flags = .{},
+            .image = self.image,
+            .view_type = .@"2d",
+            .format = self.format,
+            .components = .{
+                .r = .identity,
+                .g = .identity,
+                .b = .identity,
+                .a = .identity,
+            },
+            .subresource_range = .{
+                .aspect_mask = self.aspect_mask,
+                .base_mip_level = 0,
+                .level_count = 1,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+        };
+    }
 };
-
-pub fn renderPass(context: VkContext, params: InitRenderPassParams) !vk.RenderPass {
-    return try context.vkd.createRenderPass(context.device, &.{
-        .p_next = params.p_next,
-        .flags = params.flags,
-        .attachment_count = @intCast(u32, params.attachments.len),
-        .p_attachments = @ptrCast([*]const vk.AttachmentDescription, params.attachments.ptr),
-        .subpass_count = @intCast(u32, params.subpasses.len),
-        .p_subpasses = @ptrCast([*]const vk.SubpassDescription, params.subpasses.ptr),
-        .dependency_count = @intCast(u32, params.subpass_dependencies.len),
-        .p_dependencies = @ptrCast([*]const vk.SubpassDependency, params.subpass_dependencies.ptr),
-    }, null);
-}
-
-pub fn destroyRenderPass(context: VkContext, render_pass: vk.RenderPass) void {
-    context.vkd.destroyRenderPass(context.device, render_pass, null);
-}
 
 pub fn defaultRenderPass(context: VkContext, surface_format: vk.Format, depth_format: vk.Format) !vk.RenderPass {
     const attachments = [_]vk.AttachmentDescription{
@@ -102,26 +93,27 @@ pub fn defaultRenderPass(context: VkContext, surface_format: vk.Format, depth_fo
         },
     };
 
-    const depth_attachment_ref = vk.AttachmentReference{
-        .attachment = 1,
-        .layout = .depth_stencil_attachment_optimal,
-    };
-
-    return try vk_init.renderPass(context, .{
+    return try context.createRenderPass(.{
         .flags = .{},
         .attachments = &attachments,
-        .subpasses = &.{vk_init.subpassDescription(.{
-            .flags = .{},
-            .pipeline_bind_point = .graphics,
-            .input_attachment_refs = &.{},
-            .color_attachment_refs = &.{.{
-                .attachment = 0,
-                .layout = .color_attachment_optimal,
-            }},
-            .depth_attachment_ref = &depth_attachment_ref,
-            .resolve_attachment_refs = &.{},
-            .preserve_attachments = &.{},
-        })},
+        .subpasses = &.{
+            (zk.SubpassDescription{
+                .flags = .{},
+                .pipeline_bind_point = .graphics,
+                .input_attachment_refs = &.{},
+                .color_attachment_refs = &.{.{
+                    .attachment = 0,
+                    .layout = .color_attachment_optimal,
+                }},
+                .depth_attachment_ref = &.{
+                    .attachment = 1,
+                    .layout = .depth_stencil_attachment_optimal,
+                },
+                //depth_attachment_ref,
+                .resolve_attachment_refs = &.{},
+                .preserve_attachments = &.{},
+            }).raw(),
+        },
         .subpass_dependencies = &.{
             .{ // color depedency subpass 0
                 .src_subpass = vk.SUBPASS_EXTERNAL, // the implicit subpass before or after the subpass (depending on if it's in src or dst)
@@ -149,138 +141,6 @@ pub fn defaultRenderPass(context: VkContext, surface_format: vk.Format, depth_fo
             },
         },
     });
-}
-
-pub const InitPipelineLayoutParams = struct {
-    flags: vk.PipelineLayoutCreateFlags,
-    set_layouts: []const vk.DescriptorSetLayout,
-    push_constant_ranges: []const vk.PushConstantRange,
-};
-
-pub fn pipelineLayout(context: VkContext, params: InitPipelineLayoutParams) !vk.PipelineLayout {
-    const create_info = vk.PipelineLayoutCreateInfo{
-        .flags = params.flags,
-        .set_layout_count = @intCast(u32, params.set_layouts.len),
-        .p_set_layouts = @ptrCast([*]const vk.DescriptorSetLayout, params.set_layouts.ptr),
-        .push_constant_range_count = @intCast(u32, params.push_constant_ranges.len),
-        .p_push_constant_ranges = @ptrCast([*]const vk.PushConstantRange, params.push_constant_ranges.ptr),
-    };
-    return try context.vkd.createPipelineLayout(context.device, &create_info, null);
-}
-
-pub fn destroyPipelineLayout(context: VkContext, pipeline_layout: vk.PipelineLayout) void {
-    context.vkd.destroyPipelineLayout(context.device, pipeline_layout, null);
-}
-
-pub const InitFramebufferParams = struct {
-    flags: vk.FramebufferCreateFlags,
-    render_pass: vk.RenderPass,
-    attachments: []const vk.ImageView,
-    extent: vk.Extent2D,
-    layer_count: u32, // number of layers in the image arrays
-};
-
-pub fn framebuffer(context: VkContext, params: InitFramebufferParams) !vk.Framebuffer {
-    return try context.vkd.createFramebuffer(context.device, &.{
-        .flags = .{},
-        .render_pass = params.render_pass,
-        .attachment_count = @intCast(u32, params.attachments.len),
-        .p_attachments = @ptrCast([*]const vk.ImageView, params.attachments.ptr),
-        .width = params.extent.width,
-        .height = params.extent.height,
-        .layers = params.layer_count,
-    }, null);
-}
-
-pub fn framebuffers(allocator: Allocator, context: VkContext, render_pass: vk.RenderPass, swapchain: Swapchain) ![]vk.Framebuffer {
-    const framebuffers_ = try allocator.alloc(vk.Framebuffer, swapchain.images.len);
-    errdefer allocator.free(framebuffers_);
-
-    var initialized_count: usize = 0;
-    errdefer for (framebuffers_[0..initialized_count]) |framebuffer_| context.vkd.destroyFramebuffer(context.device, framebuffer_, null);
-
-    for (swapchain.images) |swap_image| {
-        framebuffers_[initialized_count] = try vk_init.framebuffer(context, .{
-            .flags = .{},
-            .render_pass = render_pass,
-            .attachments = &.{
-                swap_image.image_view,
-                swapchain.depth_image.image_view,
-            },
-            .extent = swapchain.extent,
-            .layer_count = 1,
-        });
-
-        initialized_count += 1;
-    }
-
-    return framebuffers_;
-}
-
-pub fn destroyFramebuffers(allocator: Allocator, context: VkContext, framebuffers_: []const vk.Framebuffer) void {
-    for (framebuffers_) |framebuffer_| context.vkd.destroyFramebuffer(context.device, framebuffer_, null);
-    allocator.free(framebuffers_);
-}
-
-pub fn commandPool(context: VkContext, flags: vk.CommandPoolCreateFlags, queue_family_index: u32) !vk.CommandPool {
-    return try context.vkd.createCommandPool(context.device, &.{
-        .flags = flags,
-        .queue_family_index = queue_family_index,
-    }, null);
-}
-
-pub fn destroyCommandPool(context: VkContext, command_pool: vk.CommandPool) void {
-    context.vkd.destroyCommandPool(context.device, command_pool, null);
-}
-
-pub fn commandBuffer(context: VkContext, command_pool: vk.CommandPool, level: vk.CommandBufferLevel) !vk.CommandBuffer {
-    const command_buffers_allocate_info = vk.CommandBufferAllocateInfo{
-        .command_pool = command_pool,
-        .level = level,
-        .command_buffer_count = 1,
-    };
-    var command_buffer: vk.CommandBuffer = undefined;
-    try context.vkd.allocateCommandBuffers(context.device, &command_buffers_allocate_info, @ptrCast([*]vk.CommandBuffer, &command_buffer));
-
-    return command_buffer;
-}
-
-pub fn freeCommandBuffer(context: VkContext, command_pool: vk.CommandPool, command_buffer: vk.CommandBuffer) void {
-    context.vkd.freeCommandBuffers(context.device, command_pool, 1, @ptrCast([*]const vk.CommandBuffer, &command_buffer));
-}
-
-pub fn commandBuffers(allocator: Allocator, context: VkContext, command_pool: vk.CommandPool, level: vk.CommandBufferLevel, count: usize) ![]vk.CommandBuffer {
-    const command_buffers_allocate_info = vk.CommandBufferAllocateInfo{
-        .command_pool = command_pool,
-        .level = level,
-        .command_buffer_count = @intCast(u32, count),
-    };
-
-    const command_buffers = try allocator.alloc(vk.CommandBuffer, count);
-    errdefer allocator.free(command_buffers);
-
-    try context.vkd.allocateCommandBuffers(context.device, &command_buffers_allocate_info, command_buffers.ptr);
-
-    // destroyed on command pool destruction
-    return command_buffers;
-}
-
-pub fn fence(context: VkContext, flags: vk.FenceCreateFlags) !vk.Fence {
-    return try context.vkd.createFence(context.device, &.{
-        .flags = flags,
-    }, null);
-}
-
-pub fn destroyFence(context: VkContext, fence_: vk.Fence) void {
-    context.vkd.destroyFence(context.device, fence_, null);
-}
-
-pub fn semaphore(context: VkContext) !vk.Semaphore {
-    return try context.vkd.createSemaphore(context.device, &.{ .flags = .{} }, null);
-}
-
-pub fn destroySemaphore(context: VkContext, semaphore_: vk.Semaphore) void {
-    context.vkd.destroySemaphore(context.device, semaphore_, null);
 }
 
 pub const ColorBlendingConfig = enum {
@@ -360,14 +220,7 @@ pub fn pipeline(context: VkContext, config: PipelineConfig, pipeline_layout: vk.
 
     const pipeline_cache = vk.PipelineCache.null_handle;
 
-    var pipeline_: vk.Pipeline = undefined;
-    _ = try context.vkd.createGraphicsPipelines(context.device, pipeline_cache, 1, @ptrCast([*]const vk.GraphicsPipelineCreateInfo, &pipeline_create_info), null, @ptrCast([*]vk.Pipeline, &pipeline_));
-
-    return pipeline_;
-}
-
-pub fn destroyPipeline(context: VkContext, pipeline_: vk.Pipeline) void {
-    context.vkd.destroyPipeline(context.device, pipeline_, null);
+    return try context.createGraphicsPipeline(pipeline_create_info, pipeline_cache);
 }
 
 pub fn viewport(extent: vk.Extent2D) vk.Viewport {
@@ -386,31 +239,4 @@ pub fn scissor(extent: vk.Extent2D) vk.Rect2D {
         .offset = .{ .x = 0, .y = 0 },
         .extent = extent,
     };
-}
-
-pub fn imageView(context: VkContext, image: vk.Image, format: vk.Format, aspect_mask: vk.ImageAspectFlags) !vk.ImageView {
-    const create_info = vk.ImageViewCreateInfo{
-        .flags = .{},
-        .image = image,
-        .view_type = .@"2d",
-        .format = format,
-        .components = .{
-            .r = .identity,
-            .g = .identity,
-            .b = .identity,
-            .a = .identity,
-        },
-        .subresource_range = .{
-            .aspect_mask = aspect_mask,
-            .base_mip_level = 0,
-            .level_count = 1,
-            .base_array_layer = 0,
-            .layer_count = 1,
-        },
-    };
-    return try context.vkd.createImageView(context.device, &create_info, null);
-}
-
-pub fn destroyImageView(context: VkContext, image_view: vk.ImageView) void {
-    context.vkd.destroyImageView(context.device, image_view, null);
 }

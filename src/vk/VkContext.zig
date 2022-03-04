@@ -11,11 +11,24 @@ const BaseDispatch = vk_dispatch.BaseDispatch;
 const InstanceDispatch = vk_dispatch.InstanceDispatch;
 const DeviceDispatch = vk_dispatch.DeviceDispatch;
 
+const UploadContext = @import("UploadContext.zig");
+const Swapchain = @import("Swapchain.zig");
+
+const vk_init = @import("vk_init.zig");
 const vk_mem = @import("vk_memory.zig");
-const vk_enumerate = @import("vk_enumerate.zig");
+const vk_cmd = @import("vk_cmd.zig");
+
+const zk = @import("zulkan.zig");
+
+const context_init = @import("vk_context_init.zig");
+
+const VkDevice = @import("VkDevice.zig");
 
 const VkContext = @This();
+const Self = VkContext;
 
+allocator: Allocator,
+//
 vki: InstanceDispatch,
 vkd: DeviceDispatch,
 //
@@ -30,69 +43,12 @@ present_queue: DeviceQueue,
 upload_context: UploadContext,
 //
 
-pub fn init(allocator: Allocator, app_name: [*:0]const u8, window: glfw.Window) !VkContext {
-    const vk_proc = @ptrCast(fn (instance: vk.Instance, procname: [*:0]const u8) callconv(.C) vk.PfnVoidFunction, glfw.getInstanceProcAddress);
-    const base_dispatch = try BaseDispatch.load(vk_proc);
+pub const DeviceQueue = struct {
+    handle: vk.Queue,
+    family: u32,
+};
 
-    const instance_layers = switch (is_debug_mode) {
-        true => [_][:0]const u8{"VK_LAYER_KHRONOS_validation"},
-        false => [_][:0]const u8{},
-    };
-
-    if (!try areLayersSupported(allocator, base_dispatch, instance_layers[0..])) {
-        return error.VkRequiredLayersNotSupported;
-    }
-
-    const platform_extensions: [][*:0]const u8 = try glfw.getRequiredInstanceExtensions();
-    const debug_extensions = [_][*:0]const u8{vk.extension_info.ext_debug_utils.name};
-    const instance_extensions: [][*:0]const u8 = try std.mem.concat(allocator, [*:0]const u8, &.{ platform_extensions, debug_extensions[0..] });
-    defer allocator.free(instance_extensions);
-
-    const instance = try initInstance(base_dispatch, app_name, instance_layers[0..], instance_extensions[0..]);
-    const vki = try InstanceDispatch.load(instance, vk_proc);
-    errdefer vki.destroyInstance(instance, null);
-
-    // const instance = try VkInstance.init(app_name, allocator);
-    // errdefer instance.deinit();
-
-    const debug_messenger: ?vk.DebugUtilsMessengerEXT = switch (is_debug_mode) {
-        true => try initDebugMessenger(instance, vki),
-        false => null,
-    };
-    errdefer if (is_debug_mode) vki.destroyDebugUtilsMessengerEXT(instance, debug_messenger.?, null);
-
-    const surface = try createSurface(instance, window);
-    errdefer vki.destroyInstance(instance, null);
-
-    const required_device_extensions = [_][*:0]const u8{vk.extension_info.khr_swapchain.name};
-    const physical_device = try physical_device_selector.selectPhysicalDevice(instance, vki, surface, required_device_extensions[0..], allocator);
-
-    const queue_family_indices = try QueueFamilyIndices.find(allocator, vki, physical_device, surface);
-
-    const device = try initDevice(vki, physical_device, required_device_extensions[0..], queue_family_indices);
-    const vkd = try DeviceDispatch.load(device, vki.dispatch.vkGetDeviceProcAddr);
-
-    const graphics_queue = DeviceQueue.init(vkd, device, queue_family_indices.graphics);
-    const present_queue = DeviceQueue.init(vkd, device, queue_family_indices.present);
-
-    var self = VkContext{
-        .vki = vki,
-        .vkd = vkd,
-        .instance = instance,
-        .debug_messenger = debug_messenger,
-        .surface = surface,
-        .physical_device = physical_device,
-        .device = device,
-        .graphics_queue = graphics_queue,
-        .present_queue = present_queue,
-        .upload_context = undefined,
-    };
-
-    const upload_context = try UploadContext.init(self, graphics_queue);
-    self.upload_context = upload_context;
-
-    return self;
-}
+pub const init = context_init.initVkContext;
 
 pub fn deinit(self: VkContext) void {
     self.upload_context.deinit(self);
@@ -111,323 +67,387 @@ pub fn immediateSubmitEnd(self: VkContext) !void {
     try self.upload_context.immediateSubmitEnd(self);
 }
 
-pub const DeviceQueue = struct {
-    handle: vk.Queue,
-    family: u32,
-
-    fn init(vkd: DeviceDispatch, device: vk.Device, family: u32) DeviceQueue {
-        return .{
-            .handle = vkd.getDeviceQueue(device, family, 0),
-            .family = family,
-        };
-    }
-};
-
-const vk_cmd = @import("vk_cmd.zig");
-const vk_sync = @import("vk_sync.zig");
-const vk_init = @import("vk_init.zig");
-
-fn debugMessengerCallback(
-    message_severity: vk.DebugUtilsMessageSeverityFlagsEXT.IntType,
-    message_types: vk.DebugUtilsMessageSeverityFlagsEXT.IntType,
-    p_callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT,
-    p_user_data: ?*anyopaque,
-) callconv(vk.vulkan_call_conv) vk.Bool32 {
-    _ = message_types;
-    _ = p_user_data;
-
-    if (p_callback_data) |callback_data| {
-        const severity = vk.DebugUtilsMessageSeverityFlagsEXT.fromInt(message_severity);
-        const prefix = "[VK_VALIDATION]: ";
-        const msg = callback_data.p_message;
-
-        if (severity.contains(.{ .info_bit_ext = true })) {
-            std.log.info("{s}{s}\n", .{ prefix, msg });
-        } else if (severity.contains(.{ .warning_bit_ext = true })) {
-            std.log.warn("{s}{s}\n", .{ prefix, msg });
-        } else if (severity.contains(.{ .error_bit_ext = true })) {
-            std.log.err("{s}{s}\n", .{ prefix, msg });
-        } else {
-            std.log.err("(Unknown severity) {s}{s}\n", .{ prefix, callback_data.p_message });
-        }
-    }
-
-    return vk.FALSE;
-}
-
-fn areLayersSupported(allocator: Allocator, vkb: BaseDispatch, required_layers: []const []const u8) !bool {
-    const available_layers = try vk_enumerate.enumerateInstanceLayerProperties(allocator, vkb);
-    defer allocator.free(available_layers);
-
-    var matches: usize = 0;
-    for (required_layers) |required_layer| {
-        for (available_layers) |available_layer| {
-            const available_layer_slice: []const u8 = std.mem.span(@ptrCast([*:0]const u8, &available_layer.layer_name));
-
-            if (std.mem.eql(u8, available_layer_slice, required_layer)) {
-                matches += 1;
-            }
-        }
-    }
-
-    return matches == required_layers.len;
-}
-
-fn initInstance(vkb: BaseDispatch, app_name: [*:0]const u8, layers: []const [:0]const u8, extensions: []const [*:0]const u8) !vk.Instance {
-    const app_info = vk.ApplicationInfo{ .p_application_name = app_name, .application_version = vk.makeApiVersion(0, 0, 0, 0), .p_engine_name = app_name, .engine_version = vk.makeApiVersion(0, 0, 0, 0), .api_version = vk.API_VERSION_1_2 };
-
-    const instance_create_info = vk.InstanceCreateInfo{
+pub fn createShaderModule(self: Self, comptime shader_source: []const u8) !vk.ShaderModule {
+    return self.vkd.createShaderModule(self.device, &.{
         .flags = .{},
-        .p_application_info = &app_info,
-        .enabled_layer_count = @intCast(u32, layers.len),
-        .pp_enabled_layer_names = @ptrCast([*]const [*:0]const u8, layers.ptr),
-        .enabled_extension_count = @intCast(u32, extensions.len),
-        .pp_enabled_extension_names = @ptrCast([*]const [*:0]const u8, extensions.ptr),
-    };
-
-    const instance = try vkb.createInstance(&instance_create_info, null);
-    return instance;
-}
-
-fn initDebugMessenger(instance: vk.Instance, vki: InstanceDispatch) !vk.DebugUtilsMessengerEXT {
-    return try vki.createDebugUtilsMessengerEXT(instance, &.{
-        .flags = .{},
-        .message_severity = .{
-            // .verbose_bit_ext = true,
-            .info_bit_ext = true,
-            .warning_bit_ext = true,
-            .error_bit_ext = true,
-        },
-        .message_type = .{
-            .general_bit_ext = true,
-            .validation_bit_ext = true,
-            .performance_bit_ext = true,
-        },
-        .pfn_user_callback = debugMessengerCallback,
-        .p_user_data = null,
+        .code_size = @intCast(u32, shader_source.len),
+        .p_code = @ptrCast([*]const u32, shader_source.ptr),
     }, null);
 }
 
-pub fn createSurface(instance: vk.Instance, window: glfw.Window) !vk.SurfaceKHR {
-    var surface: vk.SurfaceKHR = undefined;
-    const result = try glfw.createWindowSurface(instance, window, null, &surface);
-
-    if (result != @enumToInt(vk.Result.success)) {
-        return error.SurfaceInitFailed;
-    }
-
-    return surface;
+pub fn destroyShaderModule(self: Self, shader_module: vk.ShaderModule) void {
+    self.vkd.destroyShaderModule(self.device, shader_module, null);
 }
 
-const physical_device_selector = struct {
-    fn selectPhysicalDevice(
-        instance: vk.Instance,
-        vki: InstanceDispatch,
-        surface: vk.SurfaceKHR,
-        required_extensions: []const [*:0]const u8,
-        allocator: Allocator,
-    ) !vk.PhysicalDevice {
-        const physical_devices = try vk_enumerate.enumeratePhysicalDevices(allocator, vki, instance);
-        defer allocator.free(physical_devices);
+// Render pass -----
+pub fn createRenderPass(self: Self, create_info: zk.RenderPassCreateInfo) !vk.RenderPass {
+    return self.vkd.createRenderPass(self.device, &create_info.raw(), null);
+}
 
-        var highest_suitability_rating: i32 = -1;
-        var highest_suitabliity_rating_index: ?usize = null;
+pub fn destroyRenderPass(self: Self, render_pass: vk.RenderPass) void {
+    self.vkd.destroyRenderPass(self.device, render_pass, null);
+}
 
-        for (physical_devices) |pd, index| {
-            ensureExtensionsSupported(vki, pd, required_extensions, allocator) catch continue;
-            ensureHasSurfaceSupport(vki, pd, surface) catch continue;
+// Descriptors -----
+pub fn createDescriptorPool(self: Self, create_info: zk.DescriptorPoolCreateInfo) !vk.DescriptorPool {
+    return self.vkd.createDescriptorPool(self.device, &create_info.raw(), null);
+}
 
-            const props = vki.getPhysicalDeviceProperties(pd);
+pub fn destroyDescriptorPool(self: Self, descriptor_pool: vk.DescriptorPool) void {
+    self.vkd.destroyDescriptorPool(self.device, descriptor_pool, null);
+}
 
-            const suitability_rating: i32 = switch (props.device_type) {
-                .virtual_gpu => 0,
-                .integrated_gpu => 1,
-                .discrete_gpu => 2,
-                else => -1,
-            };
+pub fn createDescriptorSetLayout(self: Self, create_info: zk.DescriptorSetLayoutCreateInfo) !vk.DescriptorSetLayout {
+    return self.vkd.createDescriptorSetLayout(self.device, &create_info.raw(), null);
+}
 
-            if (suitability_rating > highest_suitability_rating) {
-                highest_suitability_rating = suitability_rating;
-                highest_suitabliity_rating_index = index;
-            }
-        }
+pub fn destroyDescriptorSetLayout(self: Self, descriptor_set_layout: vk.DescriptorSetLayout) void {
+    self.vkd.destroyDescriptorSetLayout(self.device, descriptor_set_layout, null);
+}
 
-        if (highest_suitabliity_rating_index) |index| {
-            const selected_pd = physical_devices[index];
-            std.log.info("Using physical device: {s}", .{vki.getPhysicalDeviceProperties(selected_pd).device_name});
-            return selected_pd;
-        } else {
-            return error.NoSuitableDevice;
-        }
-    }
+pub fn allocateDescriptorSet(self: Self, descriptor_pool: vk.DescriptorPool, layout: vk.DescriptorSetLayout) !vk.DescriptorSet {
+    const alloc_info: vk.DescriptorSetAllocateInfo = (zk.DescriptorSetAllocateInfo{
+        .descriptor_pool = descriptor_pool,
+        .set_layouts = &.{layout},
+    }).raw();
 
-    fn ensureExtensionsSupported(vki: InstanceDispatch, pd: vk.PhysicalDevice, extensions: []const [*:0]const u8, allocator: Allocator) !void {
-        // enumerate extensions
-        const pd_ext_props = try vk_enumerate.enumerateDeviceExtensionProperties(allocator, vki, pd);
-        defer allocator.free(pd_ext_props);
+    var descriptor_set: vk.DescriptorSet = undefined;
+    try self.vkd.allocateDescriptorSets(self.device, &alloc_info, @ptrCast([*]vk.DescriptorSet, &descriptor_set));
 
-        // check if required extensions are in the physical device's list of supported extensions
-        for (extensions) |required_ext_name| {
-            for (pd_ext_props) |pd_ext| {
-                const pd_ext_name = @ptrCast([*:0]const u8, &pd_ext.extension_name);
+    return descriptor_set;
+}
 
-                if (std.mem.eql(u8, std.mem.span(required_ext_name), std.mem.span(pd_ext_name))) {
-                    break;
-                }
-            } else {
-                return error.ExtensionsNotSupported;
-            }
-        }
-    }
+pub fn freeDescriptorSet(self: Self, descriptor_pool: vk.DescriptorPool, descriptor_set: vk.DescriptorSet) void {
+    self.vkd.freeDescriptorSets(self.device, descriptor_pool, 1, @ptrCast([*]const vk.DescriptorSet, descriptor_set));
+}
 
-    fn ensureHasSurfaceSupport(vki: InstanceDispatch, pd: vk.PhysicalDevice, surface: vk.SurfaceKHR) !void {
-        var format_count: u32 = undefined;
-        _ = try vki.getPhysicalDeviceSurfaceFormatsKHR(pd, surface, &format_count, null);
+pub fn freeDescriptorSets(self: Self, descriptor_pool: vk.DescriptorPool, descriptor_sets: []const vk.DescriptorSet) void {
+    self.vkd.freeDescriptorSets(self.device, descriptor_pool, @intCast(u32, descriptor_sets.len), @ptrCast([*]const vk.DescriptorSet, descriptor_sets.ptr));
+}
 
-        var present_mode_count: u32 = undefined;
-        _ = try vki.getPhysicalDeviceSurfacePresentModesKHR(pd, surface, &present_mode_count, null);
+// Pipeline -----
+pub fn createPipelineLayout(self: Self, create_info: zk.PipelineLayoutCreateInfo) !vk.PipelineLayout {
+    return self.vkd.createPipelineLayout(self.device, &create_info.raw(), null);
+}
 
-        if (format_count < 1 or present_mode_count < 1) {
-            return error.NoSurfaceSupport;
-        }
-    }
-};
+pub fn destroyPipelineLayout(self: Self, pipeline_layout: vk.PipelineLayout) void {
+    self.vkd.destroyPipelineLayout(self.device, pipeline_layout, null);
+}
 
-const QueueFamilyIndices = struct {
-    graphics: u32,
-    present: u32,
+pub fn createPipelineLayouts(self: Self, create_info: zk.PipelineLayoutCreateInfo, handles: []vk.PipelineLayout) !void {
+    for (handles) |*handle| handle.* = try self.createPipelineLayout(create_info);
+}
 
-    fn hasSurfaceSupport(vki: InstanceDispatch, pd: vk.PhysicalDevice, queue_family: u32, surface: vk.SurfaceKHR) !bool {
-        return (try vki.getPhysicalDeviceSurfaceSupportKHR(pd, queue_family, surface)) == vk.TRUE;
-    }
+pub fn destroyPipelineLayouts(self: Self, pipeline_layouts: []vk.PipelineLayout) void {
+    for (pipeline_layouts) |layout| self.destroyPipelineLayout(layout);
+}
 
-    fn find(allocator: Allocator, vki: InstanceDispatch, pd: vk.PhysicalDevice, surface: vk.SurfaceKHR) !QueueFamilyIndices {
-        const family_properties = try vk_enumerate.getPhysicalDeviceQueueFamilyProperties(allocator, vki, pd);
-        defer allocator.free(family_properties);
+pub fn allocatePipelineLayoutHandles(self: Self, count: usize) ![]vk.PipelineLayout {
+    return self.allocator.alloc(vk.PipelineLayout, count);
+}
 
-        var graphics_family: ?u32 = null;
-        var present_family: ?u32 = null;
+pub fn freePipelineLayoutHandles(self: Self, handles: []vk.PipelineLayout) void {
+    self.allocator.free(handles);
+}
 
-        for (family_properties) |family_props, index| {
-            if (graphics_family == null and family_props.queue_flags.graphics_bit) {
-                graphics_family = @intCast(u32, index);
+pub fn createGraphicsPipeline(self: Self, create_info: vk.GraphicsPipelineCreateInfo, pipeline_cache: vk.PipelineCache) !vk.Pipeline {
+    var pipeline: vk.Pipeline = undefined;
+    _ = try self.vkd.createGraphicsPipelines(self.device, pipeline_cache, 1, @ptrCast([*]const vk.GraphicsPipelineCreateInfo, &create_info), null, @ptrCast([*]vk.Pipeline, &pipeline));
+    return pipeline;
+}
 
-                // Since we're currenly only using explicit sharing mode for queues in the swapchain if the queue families are the same,
-                //  it's preferable to use the graphics queue as the present queue as well, if it has present support.
-                // TODO This may change in the future, once the transfer between queues is explicit.
-                const present_supported = try hasSurfaceSupport(vki, pd, graphics_family.?, surface);
-                if (present_supported) {
-                    present_family = graphics_family;
-                    break;
-                }
-            }
+pub fn destroyPipeline(self: Self, pipeline: vk.Pipeline) void {
+    self.vkd.destroyPipeline(self.device, pipeline, null);
+}
 
-            if (present_family == null and try hasSurfaceSupport(vki, pd, @intCast(u32, index), surface)) {
-                present_family = @intCast(u32, index);
-            }
-        }
+// Memory
+pub fn createBuffer(self: Self, create_info: zk.BufferCreateInfo) !vk.Buffer {
+    return self.vkd.createBuffer(self.device, &create_info.raw(), null);
+}
 
-        if (graphics_family == null or present_family == null) {
-            return error.CouldNotFindQueueFamilies;
-        }
-
-        return QueueFamilyIndices{
-            .graphics = graphics_family.?,
-            .present = present_family.?,
-        };
-    }
-};
-
-fn initDevice(vki: InstanceDispatch, pd: vk.PhysicalDevice, device_extensions: []const [*:0]const u8, queue_family_indices: QueueFamilyIndices) !vk.Device {
-    const queue_priority = [_]f32{1};
-    const queues_create_info = [_]vk.DeviceQueueCreateInfo{ .{
+pub fn createBufferGraphicsQueue(self: Self, size: vk.DeviceSize, usage: vk.BufferUsageFlags) !vk.Buffer {
+    return self.createBuffer(.{
         .flags = .{},
-        .queue_family_index = queue_family_indices.graphics,
-        .queue_count = 1,
-        .p_queue_priorities = &queue_priority,
-    }, .{
-        .flags = .{},
-        .queue_family_index = queue_family_indices.present,
-        .queue_count = 1,
-        .p_queue_priorities = &queue_priority,
-    } };
+        .size = size,
+        .usage = usage,
+        .sharing_mode = .exclusive,
+        .queue_family_indices = &.{self.graphics_queue.family},
+    });
+}
 
-    const queue_count: u32 = if (queue_family_indices.graphics == queue_family_indices.present) 1 else 2;
+pub fn destroyBuffer(self: Self, buffer: vk.Buffer) void {
+    self.vkd.destroyBuffer(self.device, buffer, null);
+}
 
-    std.log.info("device extensions count: {}", .{device_extensions.len});
+pub fn allocateBufferMemory(self: Self, buffer: vk.Buffer, memory_type: vk_mem.MemoryType) !vk.DeviceMemory {
+    return self.allocateBufferMemory2(buffer, memory_type.propertyFlags());
+}
 
-    for (device_extensions) |ext| {
-        std.log.info("required device extensions: {s}", .{ext});
-    }
+pub fn createImage(self: Self, create_info: vk.ImageCreateInfo) !vk.Image {
+    return self.vkd.createImage(self.device, &create_info, null);
+}
 
-    const create_info = vk.DeviceCreateInfo{
-        .flags = .{},
-        .queue_create_info_count = queue_count,
-        .p_queue_create_infos = &queues_create_info,
-        .enabled_layer_count = 0, // legacy
-        .pp_enabled_layer_names = undefined, // legacy
-        .enabled_extension_count = @intCast(u32, device_extensions.len),
-        .pp_enabled_extension_names = @ptrCast([*]const [*:0]const u8, device_extensions.ptr),
-        .p_enabled_features = null,
+pub fn destroyImage(self: Self, image: vk.Image) void {
+    self.vkd.destroyImage(self.device, image, null);
+}
+
+pub fn allocateImageMemory(self: Self, image: vk.Image, memory_type: vk_mem.MemoryType) !vk.DeviceMemory {
+    return try self.allocateImageMemory2(image, memory_type.propertyFlags());
+}
+
+pub fn allocateImageMemory2(self: Self, image: vk.Image, memory_property_flags: vk.MemoryPropertyFlags) !vk.DeviceMemory {
+    const mem_reqs = self.vkd.getImageMemoryRequirements(self.device, image);
+    const mem_type_index = try self.findMemoryTypeIndex(mem_reqs.memory_type_bits, memory_property_flags);
+
+    const mem_alloc_info = vk.MemoryAllocateInfo{
+        .allocation_size = mem_reqs.size,
+        .memory_type_index = mem_type_index,
     };
 
-    return try vki.createDevice(pd, &create_info, null);
+    const memory = try self.vkd.allocateMemory(self.device, &mem_alloc_info, null);
+    errdefer self.freeMemory(memory);
+
+    const memory_offset = 0;
+    try self.vkd.bindImageMemory(self.device, image, memory, memory_offset);
+
+    return memory;
 }
 
-pub const UploadContext = struct {
-    upload_fence: vk.Fence,
-    command_pool: vk.CommandPool,
-    command_buffer: vk.CommandBuffer,
-    queue: DeviceQueue,
+pub fn createImageView(self: Self, create_info: vk.ImageViewCreateInfo) !vk.ImageView {
+    return self.vkd.createImageView(self.device, &create_info, null);
+}
 
-    const Self = @This();
+pub fn destroyImageView(self: Self, image_view: vk.ImageView) void {
+    self.vkd.destroyImageView(self.device, image_view, null);
+}
 
-    // TODO maybe use a transfer queue on a seperate thread in the future rather than the graphics queue
-    fn init(context: VkContext, queue: DeviceQueue) !Self {
-        const fence = try vk_init.fence(context, .{});
+// TODO private
+pub fn findMemoryTypeIndex(self: Self, memory_type_bits: u32, flags: vk.MemoryPropertyFlags) !u32 {
+    const mem_props = self.vki.getPhysicalDeviceMemoryProperties(self.physical_device);
 
-        const command_pool = try vk_init.commandPool(context, .{ .reset_command_buffer_bit = true }, queue.family);
-        const command_buffer = try vk_init.commandBuffer(context, command_pool, .primary);
-
-        return Self{
-            .upload_fence = fence,
-            .command_pool = command_pool,
-            .command_buffer = command_buffer,
-            .queue = queue,
-        };
+    for (mem_props.memory_types[0..mem_props.memory_type_count]) |mem_type, i| {
+        if (memory_type_bits & @as(u32, 1) << @truncate(u5, i) != 0 and mem_type.property_flags.contains(flags)) {
+            return @truncate(u32, i);
+        }
     }
 
-    fn deinit(self: Self, context: VkContext) void {
-        vk_init.destroyCommandPool(context, self.command_pool); // buffers get destroyed with the pool
-        vk_init.destroyFence(context, self.upload_fence);
+    return error.NoSuitableMemoryTypeAvailable;
+}
+
+pub fn allocateBufferMemory2(self: Self, buffer: vk.Buffer, memory_property_flags: vk.MemoryPropertyFlags) !vk.DeviceMemory {
+    const mem_reqs = self.vkd.getBufferMemoryRequirements(self.device, buffer);
+    const mem_type_index = try self.findMemoryTypeIndex(mem_reqs.memory_type_bits, memory_property_flags);
+
+    const mem_alloc_info = vk.MemoryAllocateInfo{
+        .allocation_size = mem_reqs.size,
+        .memory_type_index = mem_type_index,
+    };
+
+    const memory = try self.vkd.allocateMemory(self.device, &mem_alloc_info, null);
+    errdefer self.freeMemory(memory);
+
+    const memory_offset = 0;
+    try self.vkd.bindBufferMemory(self.device, buffer, memory, memory_offset);
+
+    return memory;
+}
+
+pub fn createStagingBuffer(self: Self, size: vk.DeviceSize) !vk.Buffer {
+    return self.createBuffer(.{
+        .flags = .{},
+        .size = size,
+        .usage = .{ .transfer_src_bit = true },
+        .sharing_mode = .exclusive,
+        .queue_family_indices = &.{self.graphics_queue.family}, // TODO transfer queue on seperate thread
+    });
+}
+
+pub fn allocateStagingBufferMemory(self: Self, staging_buffer: vk.Buffer) !vk.DeviceMemory {
+    return self.allocateBufferMemory(staging_buffer, .cpu_gpu_visible);
+}
+
+pub fn mapMemory(self: Self, memory: vk.DeviceMemory, memory_size: vk.DeviceSize) !?*anyopaque {
+    const flags = vk.MemoryMapFlags{}; // there are no flags as of the current API
+    const offset: vk.DeviceSize = 0;
+    return try self.vkd.mapMemory(self.device, memory, offset, memory_size, flags);
+}
+
+/// Maps the memory and returns a many-item pointer aligned as T.
+pub fn mapMemoryAligned(self: Self, memory: vk.DeviceMemory, memory_size: vk.DeviceSize, comptime T: type) ![*]T {
+    const data: ?*anyopaque = try self.mapMemory(memory, memory_size);
+    const data_aligned_ptr: ?*align(@alignOf(T)) anyopaque = @alignCast(@alignOf(T), data);
+    return @ptrCast([*]T, data_aligned_ptr);
+}
+
+pub fn unmapMemory(self: Self, memory: vk.DeviceMemory) void {
+    self.vkd.unmapMemory(self.device, memory);
+}
+
+pub fn freeMemory(self: Self, memory: vk.DeviceMemory) void {
+    self.vkd.freeMemory(self.device, memory, null);
+}
+
+// Commands -----
+pub fn createCommandPool(self: Self, flags: vk.CommandPoolCreateFlags, queue_family_index: u32) !vk.CommandPool {
+    return try self.vkd.createCommandPool(self.device, &.{
+        .flags = flags,
+        .queue_family_index = queue_family_index,
+    }, null);
+}
+
+pub fn destroyCommandPool(self: Self, command_pool: vk.CommandPool) void {
+    self.vkd.destroyCommandPool(self.device, command_pool, null);
+}
+
+pub fn resetCommandPool(self: Self, command_pool: vk.CommandPool, flags: vk.CommandPoolResetFlags) void {
+    self.vkd.resetCommandPool(self.device, command_pool, flags);
+}
+
+pub fn allocateCommandBuffer(self: Self, command_pool: vk.CommandPool, level: vk.CommandBufferLevel) !vk.CommandBuffer {
+    const command_buffers_allocate_info = vk.CommandBufferAllocateInfo{
+        .command_pool = command_pool,
+        .level = level,
+        .command_buffer_count = 1,
+    };
+    var command_buffer: vk.CommandBuffer = undefined;
+    try self.vkd.allocateCommandBuffers(self.device, &command_buffers_allocate_info, @ptrCast([*]vk.CommandBuffer, &command_buffer));
+    return command_buffer;
+}
+
+pub fn freeCommandBuffer(self: Self, command_pool: vk.CommandPool, command_buffer: vk.CommandBuffer) void {
+    self.vkd.freeCommandBuffers(self.device, command_pool, 1, @ptrCast([*]const vk.CommandBuffer, &command_buffer));
+}
+
+pub fn allocateCommandBufferHandles(self: Self, count: usize) ![]vk.CommandBuffer {
+    return try self.allocator.alloc(vk.CommandBuffer, count);
+}
+
+pub fn freeCommandBufferHandles(self: Self, handles: []vk.CommandBuffer) void {
+    self.allocator.free(handles);
+}
+
+pub fn allocateCommandBuffers(self: Self, command_pool: vk.CommandPool, level: vk.CommandBufferLevel, handles: []vk.CommandBuffer) !void {
+    const command_buffers_allocate_info = vk.CommandBufferAllocateInfo{
+        .command_pool = command_pool,
+        .level = level,
+        .command_buffer_count = @intCast(u32, handles.len),
+    };
+
+    try self.vkd.allocateCommandBuffers(self.device, &command_buffers_allocate_info, handles.ptr);
+}
+
+pub fn freeCommandBuffers(self: Self, command_pool: vk.CommandPool, handles: []vk.CommandBuffer) void {
+    self.vkd.freeCommandBuffers(self.device, command_pool, @intCast(u32, handles.len), @ptrCast([*]const vk.CommandBuffer, handles.ptr));
+}
+
+pub fn beginRecordCommandBuffer(self: Self, command_buffer: vk.CommandBuffer, usage: vk.CommandBufferUsageFlags) !vk_cmd.CommandBufferRecorder {
+    return vk_cmd.CommandBufferRecorder.begin(self, command_buffer, usage);
+}
+
+// Uniform buffers
+pub fn allocateUniformBuffers(self: Self, comptime BufferType: type, count: usize) ![]vk_mem.AllocatedBuffer {
+    const allocator = self.allocator;
+
+    const allocated_buffers = try allocator.alloc(vk_mem.AllocatedBuffer, count);
+    errdefer allocator.free(allocated_buffers);
+
+    var allocated_count: usize = 0;
+    errdefer for (allocated_buffers[0..allocated_count]) |allocated_uniform_buffer| allocated_uniform_buffer.destroyFree(self);
+
+    while (allocated_count < count) {
+        const buffer = try self.createBufferGraphicsQueue(@sizeOf(BufferType), .{ .uniform_buffer_bit = true });
+        errdefer self.destroyBuffer(buffer);
+
+        const memory = try self.allocateBufferMemory(buffer, .cpu_gpu_visible);
+        errdefer self.freeMemory(memory);
+
+        allocated_buffers[allocated_count] = vk_mem.AllocatedBuffer{ .buffer = buffer, .memory = memory };
+        allocated_count += 1;
     }
 
-    pub fn immediateSubmitBegin(self: Self, context: VkContext) !vk.CommandBuffer {
-        try vk_cmd.beginCommandBuffer(context, self.command_buffer, .{ .one_time_submit_bit = true });
+    return allocated_buffers;
+}
 
-        return self.command_buffer;
+pub fn freeUniformBuffers(self: Self, uniform_buffers: []vk_mem.AllocatedBuffer) void {
+    for (uniform_buffers) |allocated_buffer| allocated_buffer.destroyFree(self);
+    self.allocator.free(uniform_buffers);
+}
+
+// Sync
+pub fn createFence(self: Self, flags: vk.FenceCreateFlags) !vk.Fence {
+    return self.vkd.createFence(self.device, &.{ .flags = flags }, null);
+}
+
+pub fn destroyFence(self: Self, fence: vk.Fence) void {
+    self.vkd.destroyFence(self.device, fence, null);
+}
+
+pub fn waitForFence(self: Self, fence: vk.Fence) !void {
+    const wait_all = vk.TRUE;
+    const timeout = std.math.maxInt(u64);
+    _ = try self.vkd.waitForFences(self.device, 1, @ptrCast([*]const vk.Fence, &fence), wait_all, timeout);
+}
+
+pub fn waitForFenceWithTimeout(self: Self, fence: vk.Fence, timeout: u64) !void {
+    const wait_all = vk.TRUE;
+    _ = try self.vkd.waitForFences(self.device, 1, @ptrCast([*]const vk.Fence, &fence), wait_all, timeout);
+}
+
+pub fn resetFence(self: Self, fence: vk.Fence) !void {
+    try self.vkd.resetFences(self.device, 1, @ptrCast([*]const vk.Fence, &fence));
+}
+
+pub fn createSemaphore(self: Self) !vk.Semaphore {
+    return self.vkd.createSemaphore(self.device, &.{ .flags = .{} }, null);
+}
+
+pub fn destroySemaphore(self: Self, semaphore: vk.Semaphore) void {
+    self.vkd.destroySemaphore(self.device, semaphore, null);
+}
+
+// Framebuffers
+// Framebuffer
+pub fn createFramebuffer(self: Self, create_info: zk.FrameBufferCreateInfo) !vk.Framebuffer {
+    return self.vkd.createFramebuffer(self.device, &create_info.raw(), null);
+}
+
+pub fn destroyFramebuffer(self: Self, framebuffer: vk.Framebuffer) void {
+    self.vkd.destroyFramebuffer(self.device, framebuffer, null);
+}
+
+pub fn allocateFramebufferHandles(self: Self, swapchain: Swapchain) ![]vk.Framebuffer {
+    return try self.allocator.alloc(vk.Framebuffer, swapchain.images.len);
+}
+
+pub fn freeFramebufferHandles(self: Self, handles: []vk.Framebuffer) void {
+    self.allocator.free(handles);
+}
+
+pub fn createFramebuffers(self: Self, swapchain: Swapchain, render_pass: vk.RenderPass, handles: []vk.Framebuffer) !void {
+    var created_count: usize = 0;
+    errdefer self.destroyFramebuffers(handles[0..created_count]);
+
+    const depth_image_view = swapchain.depth_image.image_view;
+
+    for (swapchain.images) |swap_image| {
+        handles[created_count] = try self.createFramebuffer(.{
+            .flags = .{},
+            .render_pass = render_pass,
+            .attachments = &.{
+                swap_image.image_view,
+                depth_image_view,
+            },
+            .extent = swapchain.extent,
+            .layer_count = 1,
+        });
+        created_count += 1;
     }
+}
 
-    pub fn immediateSubmitEnd(self: Self, context: VkContext) !void {
-        const cmd_buf = self.command_buffer;
+pub fn destroyFramebuffers(self: Self, framebuffers: []const vk.Framebuffer) void {
+    for (framebuffers) |framebuffer| self.destroyFramebuffer(framebuffer);
+}
 
-        try vk_cmd.endCommandBuffer(context, cmd_buf);
-
-        const submit_info = vk.SubmitInfo{
-            .wait_semaphore_count = 0,
-            .p_wait_semaphores = undefined,
-            .p_wait_dst_stage_mask = undefined,
-            .command_buffer_count = 1,
-            .p_command_buffers = @ptrCast([*]const vk.CommandBuffer, &cmd_buf),
-            .signal_semaphore_count = 0,
-            .p_signal_semaphores = undefined,
-        };
-
-        try context.vkd.queueSubmit(self.queue.handle, 1, @ptrCast([*]const vk.SubmitInfo, &submit_info), self.upload_fence);
-
-        try vk_sync.waitForFence(context, self.upload_fence);
-        try vk_sync.resetFence(context, self.upload_fence);
-
-        try context.vkd.resetCommandBuffer(self.command_buffer, .{});
-    }
-};
+pub fn updateDescriptorSets(self: Self, descriptor_writes: []const vk.WriteDescriptorSet, descriptor_copies: []const vk.CopyDescriptorSet) !void {
+    self.vkd.updateDescriptorSets(self.device, @intCast(u32, descriptor_writes.len), @ptrCast([*]const vk.WriteDescriptorSet, descriptor_writes.ptr), @intCast(u32, descriptor_copies.len), @ptrCast([*]const vk.CopyDescriptorSet, descriptor_copies.ptr));
+}

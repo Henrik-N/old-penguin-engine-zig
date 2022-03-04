@@ -6,11 +6,11 @@ const mem = std.mem;
 
 const vk_init = @import("vk_init.zig");
 const vk_mem = @import("vk_memory.zig");
-const vk_sync = @import("vk_sync.zig");
 const vk_enumerate = @import("vk_enumerate.zig");
 
 const max_timeout = std.math.maxInt(u64);
 
+// TODO fix swapchain recreation bug
 const Swapchain = @This();
 
 handle: vk.SwapchainKHR,
@@ -34,7 +34,6 @@ pub fn init(allocator: mem.Allocator, context: VkContext, window: glfw.Window) !
 }
 
 // Initializes everything about the swapchain except the command pool and the command buffers.
-// These don't have to be recreated when
 fn initInner(
     allocator: mem.Allocator,
     context: VkContext,
@@ -90,7 +89,7 @@ fn initInner(
     const swapchain = try context.vkd.createSwapchainKHR(context.device, &create_info, null);
     errdefer context.vkd.destroySwapchainKHR(context.device, swapchain, null);
 
-    var images = try initSwapchainImages(context, swapchain, surface_format.format, allocator);
+    var images = try initSwapchainImages(allocator, context, swapchain, surface_format.format);
     errdefer {
         for (images) |image| image.deinit(context);
         allocator.free(images);
@@ -113,8 +112,8 @@ fn initInner(
 
     // Acquire first image
     //
-    var next_image_acquired_semaphore = try vk_init.semaphore(context);
-    errdefer context.vkd.destroySemaphore(context.device, next_image_acquired_semaphore, null);
+    var next_image_acquired_semaphore = try context.createSemaphore();
+    errdefer context.destroySemaphore(next_image_acquired_semaphore);
 
     const result = try context.vkd.acquireNextImageKHR(context.device, swapchain, max_timeout, next_image_acquired_semaphore, .null_handle);
 
@@ -132,9 +131,12 @@ fn initInner(
     std.mem.swap(vk.Semaphore, &images[current_image_index].image_acquired_semaphore, &next_image_acquired_semaphore);
 
     // setup command pool
-    const render_commands_pool = try vk_init.commandPool(context, .{}, context.graphics_queue.family);
-    errdefer vk_init.destroyCommandPool(context, render_commands_pool);
-    const render_command_buffers = try vk_init.commandBuffers(allocator, context, render_commands_pool, .primary, images.len);
+    const render_commands_pool = try context.createCommandPool(.{}, context.graphics_queue.family);
+    errdefer context.destroyCommandPool(render_commands_pool);
+
+    const render_command_buffers = try context.allocateCommandBufferHandles(images.len);
+    errdefer context.freeCommandBufferHandles(render_command_buffers);
+    try context.allocateCommandBuffers(render_commands_pool, .primary, render_command_buffers);
 
     return Swapchain{
         .handle = swapchain,
@@ -165,35 +167,33 @@ pub fn recreate(self: *Swapchain, allocator: mem.Allocator, context: VkContext, 
 fn deinitExceptHandle(self: Swapchain, allocator: mem.Allocator, context: VkContext) void {
     self.depth_image.deinit(context);
 
-    for (self.render_command_buffers) |cmd_buffer| {
-        vk_init.freeCommandBuffer(context, self.render_commands_pool, cmd_buffer);
-    }
-    allocator.free(self.render_command_buffers);
-    vk_init.destroyCommandPool(context, self.render_commands_pool);
+    context.freeCommandBuffers(self.render_commands_pool, self.render_command_buffers);
+    context.freeCommandBufferHandles(self.render_command_buffers);
+
+    context.destroyCommandPool(self.render_commands_pool);
 
     for (self.images) |image| image.deinit(context);
     allocator.free(self.images);
-    context.vkd.destroySemaphore(context.device, self.next_image_acquired_semaphore, null);
+
+    context.destroySemaphore(self.next_image_acquired_semaphore);
 }
 
 pub fn newRenderCommandsBuffer(self: Swapchain, context: VkContext) !vk.CommandBuffer {
-    return try vk_init.commandBuffer(context, self.render_commands_pool, .primary);
+    // return context.createcomm
+    return context.allocateCommandBuffer(self.render_commands_pool, .primary);
 }
 
 pub fn submitPresentCommandBuffer(self: *Swapchain, context: VkContext, command_buffer: vk.CommandBuffer) !PresentState {
     const current_image: SwapImage = self.images[self.current_image_index];
-    try current_image.waitForRenderFrameFence(context); // wait for signal from fence saying that the rendering is complete
-    try context.vkd.resetFences(context.device, 1, @ptrCast([*]const vk.Fence, &current_image.render_frame_fence)); // reset fence to unsignaled state
+    try context.waitForFence(current_image.render_frame_fence);
+    try context.resetFence(current_image.render_frame_fence);
 
     // free command buffer we just finished rendering to
     const just_used_command_buffer = self.render_command_buffers[self.current_image_index];
-    vk_init.freeCommandBuffer(context, self.render_commands_pool, just_used_command_buffer);
-    // set the command buffer for this image to the one we're about to render to
+    context.freeCommandBuffer(self.render_commands_pool, just_used_command_buffer);
     self.render_command_buffers[self.current_image_index] = command_buffer;
 
     // Submit command buffer to graphics queue
-    // TODO may return an out of date error (usually resized, swapchain has to be recreated)
-    //self.submitPresent(context, command_buffer, current_image);
     try self.submitPresent(context, command_buffer, current_image);
 
     // acquire next image
@@ -214,7 +214,7 @@ pub fn submitPresentCommandBuffer(self: *Swapchain, context: VkContext, command_
 fn submitPresent(self: Swapchain, context: VkContext, command_buffer: vk.CommandBuffer, image: SwapImage) !void {
     // Ensure render pass doesn't begin until the image is available.
     // TODO It may be faster to wait for the color attachment output stage in the render pass instead, through using a subpass dependency.
-    const wait_stage = [_]vk.PipelineStageFlags{.{ .top_of_pipe_bit = true }}; // TODO: color attachment bit?
+    const wait_stage = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
 
     try context.vkd.queueSubmit(context.graphics_queue.handle, 1, &[_]vk.SubmitInfo{.{
         // wait for image acquisition before executing this command buffer
@@ -245,7 +245,8 @@ fn submitPresent(self: Swapchain, context: VkContext, command_buffer: vk.Command
 
 pub fn waitForAllFences(self: Swapchain, context: VkContext) !void {
     for (self.images) |image| {
-        try vk_sync.waitForFence(context, image.render_frame_fence);
+        try context.waitForFence(image.render_frame_fence);
+        //try vk_sync.waitForFence(context, image.render_frame_fence);
     }
 }
 
@@ -262,17 +263,21 @@ pub const SwapImage = struct {
     render_frame_fence: vk.Fence, // signaled when the frame has finished rendering
 
     fn init(context: VkContext, image: vk.Image, format: vk.Format) !SwapImage {
-        const image_view = try vk_init.imageView(context, image, format, .{ .color_bit = true });
-        errdefer context.vkd.destroyImageView(context.device, image_view, null);
+        const image_view = try context.createImageView((vk_init.SimpleImageViewCreateInfo{
+            .image = image,
+            .format = format,
+            .aspect_mask = .{ .color_bit = true },
+        }).raw());
+        errdefer context.destroyImageView(image_view);
 
-        const image_acquired_semaphore = try vk_init.semaphore(context);
-        errdefer context.vkd.destroySemaphore(context.device, image_acquired_semaphore, null);
+        const image_acquired_semaphore = try context.createSemaphore();
+        errdefer context.destroySemaphore(image_acquired_semaphore);
 
-        const render_completed_semaphore = try vk_init.semaphore(context);
-        errdefer context.vkd.destroySemaphore(context.device, render_completed_semaphore, null);
+        const render_completed_semaphore = try context.createSemaphore();
+        errdefer context.destroySemaphore(render_completed_semaphore);
 
-        const render_frame_fence = try vk_init.fence(context, .{ .signaled_bit = true });
-        errdefer context.vkd.destroyFence(context.device, render_frame_fence, null);
+        const render_frame_fence = try context.createFence(.{ .signaled_bit = true });
+        errdefer context.destroyFence(render_frame_fence);
 
         return SwapImage{
             .image = image,
@@ -284,19 +289,14 @@ pub const SwapImage = struct {
     }
 
     fn deinit(self: SwapImage, context: VkContext) void {
-        self.waitForRenderFrameFence(context) catch {
+        context.waitForFence(self.render_frame_fence) catch {
             std.log.err("SwapImage couldn't wait for fence!", .{});
-            return;
         };
+
         context.vkd.destroyFence(context.device, self.render_frame_fence, null);
         context.vkd.destroySemaphore(context.device, self.render_completed_semaphore, null);
         context.vkd.destroySemaphore(context.device, self.image_acquired_semaphore, null);
         context.vkd.destroyImageView(context.device, self.image_view, null);
-    }
-
-    fn waitForRenderFrameFence(self: SwapImage, context: VkContext) !void {
-        const timeout = std.math.maxInt(u64); // TODO only one render frame fence?
-        _ = try context.vkd.waitForFences(context.device, 1, @ptrCast([*]const vk.Fence, &self.render_frame_fence), vk.TRUE, timeout);
     }
 };
 
@@ -321,7 +321,7 @@ pub const DepthImage = struct {
 
         const depth_format = try findSupportedFormat(context, &format_priorities, tiling, .{ .depth_stencil_attachment_bit = true });
 
-        const image = try vk_mem.createImage(context, .{
+        const image_create_info: vk.ImageCreateInfo = (vk_init.SimpleImageCreateInfo{
             .extent = .{
                 .width = extent.width,
                 .height = extent.height,
@@ -330,14 +330,19 @@ pub const DepthImage = struct {
             .format = depth_format,
             .tiling = tiling,
             .usage = .{ .depth_stencil_attachment_bit = true },
-        });
-        errdefer vk_mem.destroyImage(context, image);
+        }).raw();
+        const image = try context.createImage(image_create_info);
+        errdefer context.destroyImage(image);
 
-        const memory = try vk_mem.allocateImageMemory(context, image, .gpu_only);
-        errdefer vk_mem.freeMemory(context, memory);
+        const memory = try context.allocateImageMemory(image, .gpu_only);
+        errdefer context.freeMemory(memory);
 
-        const image_view = try vk_init.imageView(context, image, depth_format, .{ .depth_bit = true });
-        errdefer vk_init.destroyImageView(image_view);
+        const image_view = try context.createImageView((vk_init.SimpleImageViewCreateInfo{
+            .image = image,
+            .format = depth_format,
+            .aspect_mask = .{ .depth_bit = true },
+        }).raw());
+        errdefer context.destroyImageView(image_view);
 
         return Self{
             .image = image,
@@ -348,9 +353,9 @@ pub const DepthImage = struct {
     }
 
     fn deinit(self: Self, context: VkContext) void {
-        vk_init.destroyImageView(context, self.image_view);
-        vk_mem.destroyImage(context, self.image);
-        vk_mem.freeMemory(context, self.image_memory);
+        context.destroyImageView(self.image_view);
+        context.destroyImage(self.image);
+        context.freeMemory(self.image_memory);
     }
 
     fn findSupportedFormat(context: VkContext, format_priority_list: []const vk.Format, tiling: vk.ImageTiling, features: vk.FormatFeatureFlags) !vk.Format {
@@ -372,8 +377,7 @@ pub const DepthImage = struct {
     }
 };
 
-// @lifetime The caller owns the returned memory.
-fn initSwapchainImages(context: VkContext, swapchain: vk.SwapchainKHR, format: vk.Format, allocator: mem.Allocator) ![]SwapImage {
+fn initSwapchainImages(allocator: mem.Allocator, context: VkContext, swapchain: vk.SwapchainKHR, format: vk.Format) ![]SwapImage {
     const swapchain_images = try vk_enumerate.getSwapchainImagesKHR(allocator, context, swapchain);
     defer allocator.free(swapchain_images);
 

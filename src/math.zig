@@ -1,7 +1,7 @@
 const vk = @import("vulkan");
 const smath = @import("std").math;
 
-// inspired by https://github.com/cshenton/learnopengl/blob/master/src/glm.zig
+// Thanks to https://github.com/cshenton/learnopengl/blob/master/src/glm.zig
 
 pub const Vec2 = Vector(2);
 pub const Vec3 = Vector(3);
@@ -11,6 +11,38 @@ pub const Mat2 = Matrix(2);
 pub const Mat3 = Matrix(3);
 pub const Mat4 = Matrix(4);
 
+pub const init = struct {
+    pub fn vec2(x: f32, y: f32) Vec2 {
+        return Vec2{ .values = .{ x, y } };
+    }
+
+    pub fn vec3(x: f32, y: f32, z: f32) Vec3 {
+        return Vec3{ .values = .{ x, y, z } };
+    }
+
+    pub fn vec4(x: f32, y: f32, z: f32, w: f32) Vec4 {
+        return Vec4{ .values = .{ x, y, z, w } };
+    }
+
+    pub fn translationMat4(translation: Vec3) Mat4 {
+        return Mat4{
+            .values = .{
+                .{ 1, 0, 0, 0 },
+                .{ 0, 1, 0, 0 },
+                .{ 0, 0, 1, 0 },
+                .{ translation.x(), translation.y(), translation.z(), 1 },
+            },
+        };
+    }
+
+    pub const PerspectiveProjectionMat4Params = struct {
+        fovy: f32, // radians
+        aspect_ratio: f32,
+        z_near: f32,
+        z_far: f32,
+    };
+};
+
 fn Vector(comptime slot_count: usize) type {
     return extern struct {
         values: [slot_count]f32,
@@ -18,7 +50,7 @@ fn Vector(comptime slot_count: usize) type {
         const Self = @This();
 
         pub fn fill(fill_value: f32) Self {
-            comptime var values: [slot_count]f32 = undefined;
+            var values: [slot_count]f32 = undefined;
             comptime var i = 0;
 
             inline while (i < values.len) : (i += 1) {
@@ -129,7 +161,7 @@ fn Vector(comptime slot_count: usize) type {
     };
 }
 
-// column major matrix
+/// column major matrix
 fn Matrix(comptime side_len: usize) type {
     return extern struct {
         values: [side_len][side_len]f32,
@@ -137,7 +169,7 @@ fn Matrix(comptime side_len: usize) type {
         const Self = @This();
 
         pub fn zero() Self {
-            comptime var values_: [side_len][side_len]f32 = undefined;
+            var values_: [side_len][side_len]f32 = undefined;
 
             comptime var i = 0;
             inline while (i < side_len) : (i += 1) {
@@ -151,7 +183,7 @@ fn Matrix(comptime side_len: usize) type {
         }
 
         pub fn identity() Self {
-            comptime var values_: [side_len][side_len]f32 = undefined;
+            var values_: [side_len][side_len]f32 = undefined;
 
             comptime var i = 0;
             inline while (i < side_len) : (i += 1) {

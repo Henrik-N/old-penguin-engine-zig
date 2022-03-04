@@ -2,7 +2,6 @@ const vk = @import("vulkan");
 // const VkContext = @import("vk_context.zig").VkContext;
 const VkContext = @import("VkContext.zig");
 
-const vk_sync = @import("vk_sync.zig");
 const vk_init = @import("vk_init.zig");
 
 const mem = @import("std").mem;
@@ -97,8 +96,6 @@ pub const CommandBufferRecorder = struct {
             .render_pass = params.render_pass,
             .framebuffer = params.framebuffer,
             .render_area = render_area,
-            // .clear_value_count = @intCast(u32, clear_values.len),
-            // .p_clear_values = @ptrCast([*]const vk.ClearValue, &clear_values),
             .clear_value_count = @intCast(u32, params.clear_values.len),
             .p_clear_values = @ptrCast([*]const vk.ClearValue, params.clear_values.ptr),
         }, .@"inline");
@@ -122,6 +119,22 @@ pub const CommandBufferRecorder = struct {
         self.context.vkd.cmdBindVertexBuffers(self.command_buffer, params.first_binding, @intCast(u32, params.vertex_buffers.len), @ptrCast([*]const vk.Buffer, params.vertex_buffers.ptr), @ptrCast([*]const vk.DeviceSize, params.offsets.ptr));
     }
 
+    pub fn bindIndexBuffer(self: Self, buffer: vk.Buffer, offset: vk.DeviceSize, index_type: vk.IndexType) void {
+        self.context.vkd.cmdBindIndexBuffer(self.command_buffer, buffer, offset, index_type);
+    }
+
+    pub const BindDescriptorSetsParams = struct {
+        bind_point: vk.PipelineBindPoint,
+        pipeline_layout: vk.PipelineLayout,
+        descriptor_sets: []const vk.DescriptorSet,
+        dynamic_offsets: []const u32,
+    };
+
+    pub fn bindDescriptorSets(self: Self, params: BindDescriptorSetsParams) void {
+        const first_set = 0;
+        self.context.vkd.cmdBindDescriptorSets(self.command_buffer, params.bind_point, params.pipeline_layout, first_set, @intCast(u32, params.descriptor_sets.len), @ptrCast([*]const vk.DescriptorSet, params.descriptor_sets.ptr), @intCast(u32, params.dynamic_offsets.len), @ptrCast([*]const u32, params.dynamic_offsets.ptr));
+    }
+
     pub const DrawParams = struct {
         vertex_count: u32,
         instance_count: u32,
@@ -133,68 +146,22 @@ pub const CommandBufferRecorder = struct {
         self.context.vkd.cmdDraw(self.command_buffer, params.vertex_count, params.instance_count, params.first_vertex, params.first_instance);
     }
 
-    // context.vkd.cmdBindVertexBuffers(command_buffer, 0, 1, @ptrCast([*]const vk.Buffer, &params.vertex_buffer), &offset);
-    //     context.vkd.cmdDraw(command_buffer, vertices.len, 1, 0, 0);
+    pub const DrawIndexedParams = struct {
+        index_count: usize,
+        instance_count: usize,
+        first_index: usize,
+        vertex_offset: isize,
+        first_instance: usize,
+    };
 
-    // pub const RenderPassBeginParams = struct {
-
-    // };
-
-    // pub fn beginRenderPass(self: Self, render_pass: vk.RenderPass, render_area: vk.Extent2D) !void {
-
-    //  context.vkd.cmdBeginRenderPass(cmdbuf, &.{
-    //     .render_pass = params.render_pass,
-    //     .framebuffer = params.framebuffer,
-    //     .render_area = render_area,
-    //     .clear_value_count = 1,
-    //     .p_clear_values = @ptrCast([*]const vk.ClearValue, &clear),
-    // }, .@"inline");
-
-    // const render_area = vk.Rect2D{
-    //     .offset = .{ .x = 0, .y = 0 },
-    //     .extent = params.extent,
-    // };
-
-    // context.vkd.cmdBeginRenderPass(cmdbuf, &.{
-    //     .render_pass = params.render_pass,
-    //     .framebuffer = params.framebuffer,
-    //     .render_area = render_area,
-    //     .clear_value_count = 1,
-    //     .p_clear_values = @ptrCast([*]const vk.ClearValue, &clear),
-    // }, .@"inline");
-
-    // }
+    pub fn drawIndexed(self: Self, params: DrawIndexedParams) void {
+        self.context.vkd.cmdDrawIndexed(
+            self.command_buffer,
+            @intCast(u32, params.index_count),
+            @intCast(u32, params.instance_count),
+            @intCast(u32, params.first_index),
+            @intCast(i32, params.vertex_offset),
+            @intCast(u32, params.first_instance),
+        );
+    }
 };
-
-// pub fn setViewport(context: VkContext, viewport: vk.Viewport) !void {}
-
-// pub fn beginSingleTimeCommands(context: VkContext, command_pool: vk.CommandPool) !vk.CommandBuffer {
-//
-//     const command_buffer = vk_init.commandBuffer(context, command_pool, .primary);
-//     vk_cmd.beginCommandBuffer(cotext, command_buffer, .{ .singl})
-//
-//
-//
-// }
-
-// pub fn queueSubmit(context: VkContext, command_buffer: vk.CommandBuffer, queue: vk.Queue, sync_info: vk_sync.SyncInfo) !void {
-//     // const sub_info = vk.SubmitInfo{
-//     //     .wait_semaphore_count = if (sync.info.wait_semaphore != .null_handle) 1 else 0,
-//     //     .p_wait_semaphores = @ptrCast([*]const vk.Semaphore, &sync_info.wait_semaphore),
-//
-//     // };
-//
-//     const submit_info = vk.SubmitInfo{
-//         .wait_semaphore_count = if (sync_info.wait_semaphore) |_| 1 else 0,
-//         .p_wait_semaphores = if (sync_info.wait_semaphore) |wait_semaphore| @ptrCast([*]const vk.Semaphore, &wait_semaphore) else undefined,
-//         .p_wait_dst_stage_mask = if (sync_info.wait_stage) |wait_stage| @ptrCast([*]const vk.PipelineStageFlags, &wait_stage) else undefined,
-//         .command_buffer_count = 1,
-//         .p_command_buffers = @ptrCast([*]const vk.CommandBuffer, &command_buffer),
-//         .signal_semaphore_count = if (sync_info.signal_semaphore) |_| 1 else 0,
-//         .p_signal_semaphores = if (sync_info.signal_semaphore) |signal_semaphore| @ptrCast([*]const vk.Semaphore, &signal_semaphore) else undefined,
-//     };
-//
-//     try context.vkd.queueSubmit(queue, 1, @ptrCast([*]const vk.SubmitInfo, &submit_info), fence: Fence)
-//
-//     try context.vkd.queueSubmit(queue, 1, @ptrCast([*]const vk.SubmitInfo, &submit_info, signal_fence);
-// }
