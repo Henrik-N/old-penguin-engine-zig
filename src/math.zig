@@ -1,5 +1,6 @@
 const vk = @import("vulkan");
-const smath = @import("std").math;
+const std = @import("std");
+const smath = std.math;
 
 // Thanks to https://github.com/cshenton/learnopengl/blob/master/src/glm.zig
 
@@ -101,22 +102,28 @@ fn Vector(comptime slot_count: usize) type {
             for (self.values) |value| {
                 sum_ += value;
             }
-
             return sum_;
         }
 
         pub fn dot(self: Self, other: Self) f32 {
             const product = self.mul(other);
-
             return product.sum();
         }
 
-        pub fn sqNormalized(self: Self) f32 {
-            return self.dot(self);
+        pub fn sqMagnitude(self: Self) f32 {
+            const vec = self.mul(self);
+            return vec.sum();
         }
 
-        pub fn normalized(self: Self) f32 {
-            return smath.sqrt(self.sqNormalized());
+        pub fn magnitude(self: Self) f32 {
+            return smath.sqrt(self.sqMagnitude());
+        }
+
+        pub fn normalized(self: Self) Self {
+            var mag = self.magnitude();
+            if (mag == 0) mag = 1;
+
+            return self.mulScalar(1 / mag);
         }
 
         pub fn cross(self: Self, other: Self) Self {
@@ -139,8 +146,16 @@ fn Vector(comptime slot_count: usize) type {
             return self.values[0];
         }
 
+        pub fn setX(self: *Self, val: f32) void {
+            self.values[0] = val;
+        }
+
         pub fn y(self: Self) f32 {
             return self.values[1];
+        }
+
+        pub fn setY(self: *Self, val: f32) void {
+            self.values[1] = val;
         }
 
         pub fn z(self: Self) f32 {
@@ -151,12 +166,28 @@ fn Vector(comptime slot_count: usize) type {
             return self.values[2];
         }
 
+        pub fn setZ(self: *Self, val: f32) void {
+            comptime if (slot_count < 3) {
+                @compileError("vector has no Z-component");
+            };
+
+            self.values[2] = val;
+        }
+
         pub fn w(self: Self) f32 {
             comptime if (slot_count < 4) {
                 @compileError("vector has no W-component");
             };
 
             return self.values[3];
+        }
+
+        pub fn setW(self: *Self, val: f32) void {
+            comptime if (slot_count < 4) {
+                @compileError("vector has no W-component");
+            };
+
+            self.values[3] = val;
         }
     };
 }

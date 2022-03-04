@@ -17,17 +17,13 @@ const vk_init = @import("vk/vk_init.zig");
 const vk_cmd = @import("vk/vk_cmd.zig");
 const vk_desc_sets = @import("vk/vk_descriptor_sets.zig");
 
+const input = @import("input.zig");
+
 const DescriptorLayoutCache = vk_desc_sets.DescriptorLayoutCache;
 const DescriptorAllocator = vk_desc_sets.DescriptorAllocator;
 const DescriptorBuilder = vk_desc_sets.DescriptorBuilder;
 
 const m = @import("math.zig");
-
-const old_tri_mesh = [_]Vertex{
-    .{ .pos = .{ 0, -0.5 }, .color = .{ 1, 0, 0 } },
-    .{ .pos = .{ 0.5, 0.5 }, .color = .{ 0, 1, 0 } },
-    .{ .pos = .{ -0.5, 0.5 }, .color = .{ 0, 0, 1 } },
-};
 
 // triangle
 const mesh = struct {
@@ -78,6 +74,7 @@ pub fn main() !void {
         .client_api = .no_api, // don't create an OpenGL context
     });
     defer window.destroy();
+    input.initInputState(&window);
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
