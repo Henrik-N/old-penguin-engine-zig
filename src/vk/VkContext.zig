@@ -22,8 +22,6 @@ const zk = @import("zulkan.zig");
 
 const context_init = @import("vk_context_init.zig");
 
-const VkDevice = @import("VkDevice.zig");
-
 const VkContext = @This();
 const Self = VkContext;
 
@@ -266,15 +264,20 @@ pub fn allocateStagingBufferMemory(self: Self, staging_buffer: vk.Buffer) !vk.De
     return self.allocateBufferMemory(staging_buffer, .cpu_gpu_visible);
 }
 
-pub fn mapMemory(self: Self, memory: vk.DeviceMemory, memory_size: vk.DeviceSize) !?*anyopaque {
+pub const MapMemoryParams = struct {
+    memory: vk.DeviceMemory,
+    offset: vk.DeviceSize,
+    size: vk.DeviceSize,
+};
+
+pub fn mapMemory(self: Self, params: MapMemoryParams) !?*anyopaque {
     const flags = vk.MemoryMapFlags{}; // there are no flags as of the current API
-    const offset: vk.DeviceSize = 0;
-    return try self.vkd.mapMemory(self.device, memory, offset, memory_size, flags);
+    return try self.vkd.mapMemory(self.device, params.memory, params.offset, params.size, flags);
 }
 
 /// Maps the memory and returns a many-item pointer aligned as T.
-pub fn mapMemoryAligned(self: Self, memory: vk.DeviceMemory, memory_size: vk.DeviceSize, comptime T: type) ![*]T {
-    const data: ?*anyopaque = try self.mapMemory(memory, memory_size);
+pub fn mapMemoryAligned(self: Self, params: MapMemoryParams, comptime T: type) ![*]T {
+    const data: ?*anyopaque = try self.mapMemory(params);
     const data_aligned_ptr: ?*align(@alignOf(T)) anyopaque = @alignCast(@alignOf(T), data);
     return @ptrCast([*]T, data_aligned_ptr);
 }

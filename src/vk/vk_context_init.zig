@@ -16,7 +16,7 @@ const is_debug_mode: bool = builtin.mode == std.builtin.Mode.Debug;
 
 const VkContext = @import("VkContext.zig");
 
-pub fn initVkContext(allocator: Allocator, app_name: [*:0]const u8, window: glfw.Window) !VkContext {
+pub fn initVkContext(allocator: Allocator, window: glfw.Window, app_name: [*:0]const u8) !VkContext {
     const vk_proc = @ptrCast(fn (instance: vk.Instance, procname: [*:0]const u8) callconv(.C) vk.PfnVoidFunction, glfw.getInstanceProcAddress);
     const base_dispatch = try BaseDispatch.load(vk_proc);
 

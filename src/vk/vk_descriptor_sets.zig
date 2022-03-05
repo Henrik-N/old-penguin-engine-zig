@@ -137,16 +137,15 @@ pub const DescriptorAllocator = struct {
 const DescriptorLayoutKey = struct {
     bindings: std.ArrayList(vk.DescriptorSetLayoutBinding), // TODO stack array
 
-    fn init(allocator: Allocator, bindings_count: usize) !DescriptorLayoutKey {
-        return DescriptorLayoutKey{ .bindings = try std.ArrayList(vk.DescriptorSetLayoutBinding).initCapacity(allocator, bindings_count) };
+    fn init(allocator: Allocator, bindings: []const vk.DescriptorSetLayoutBinding) !DescriptorLayoutKey {
+        var bindings_list = try std.ArrayList(vk.DescriptorSetLayoutBinding).initCapacity(allocator, bindings.len);
+        try bindings_list.appendSlice(bindings);
+
+        return DescriptorLayoutKey{ .bindings = bindings_list };
     }
 
     fn deinit(self: DescriptorLayoutKey) void {
         self.bindings.deinit();
-    }
-
-    fn addBindings(self: *DescriptorLayoutKey, bindings: []const vk.DescriptorSetLayoutBinding) !void {
-        try self.bindings.appendSlice(bindings);
     }
 };
 
@@ -236,9 +235,8 @@ pub const DescriptorLayoutCache = struct {
     /// NOTE: The implementation assumes that the bindings given in zk.DescriptorSetLayouCreateInfo are ordered from lowest binding number to highest
     pub fn createDescriptorSetLayout(self: *Self, create_info: zk.DescriptorSetLayoutCreateInfo) !vk.DescriptorSetLayout {
         // construct key from bindings param
-        var key = try DescriptorLayoutKey.init(self.allocator, create_info.bindings.len);
+        var key = try DescriptorLayoutKey.init(self.allocator, create_info.bindings);
         errdefer key.deinit();
-        try key.addBindings(create_info.bindings);
 
         for (create_info.bindings) |binding| {
             try key.bindings.append(binding);

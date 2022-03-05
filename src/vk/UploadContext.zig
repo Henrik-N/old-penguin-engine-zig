@@ -55,8 +55,6 @@ pub fn immediateSubmitEnd(self: Self, context: VkContext) !void {
 
     try context.vkd.queueSubmit(self.queue.handle, 1, @ptrCast([*]const vk.SubmitInfo, &submit_info), self.upload_fence);
 
-    // context.waitForFence
-
     try context.waitForFence(self.upload_fence);
     try context.resetFence(self.upload_fence);
 

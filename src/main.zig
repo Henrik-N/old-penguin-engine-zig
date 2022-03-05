@@ -10,8 +10,6 @@ const VkContext = @import("vk/VkContext.zig");
 const Swapchain = @import("vk/Swapchain.zig");
 const Vertex = @import("vk/Vertex.zig");
 
-const VkDevice = @import("vk/VkDevice.zig");
-
 const vk_mem = @import("vk/vk_memory.zig");
 const vk_init = @import("vk/vk_init.zig");
 const vk_cmd = @import("vk/vk_cmd.zig");
@@ -25,6 +23,23 @@ const DescriptorBuilder = vk_desc_sets.DescriptorBuilder;
 
 const m = @import("math.zig");
 
+const MeshView = struct {
+    vertices: []const Vertex, // TODO slice of memory from bigger buffer
+    indices: []const u32, // TODO slice of memory from bigger buffer
+
+    pub fn new(vertices: []const Vertex, indices: []const u32) MeshView {
+        return MeshView{ .vertices = vertices, .indices = indices };
+    }
+
+    pub fn verticesSize(self: MeshView) usize {
+        return @sizeOf(Vertex) * self.vertices.len;
+    }
+
+    pub fn indicesSize(self: MeshView) usize {
+        return @sizeOf(u32) * self.indices.len;
+    }
+};
+
 // triangle
 const mesh = struct {
     const vertices = [_]Vertex{
@@ -34,8 +49,9 @@ const mesh = struct {
         .{ .pos = .{ -0.5, 0.5 }, .color = .{ 1, 1, 1 } },
     };
 
-    const indices = [_]u16{ 0, 1, 2, 2, 3, 0 };
+    const indices = [_]u32{ 0, 1, 2, 2, 3, 0 };
 };
+const mesh_view = MeshView.new(&mesh.vertices, &mesh.indices);
 
 const UniformBufferData = packed struct {
     model: m.Mat4,
@@ -80,7 +96,7 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const context = try VkContext.init(allocator, app_name, window);
+    const context = try VkContext.init(allocator, window, app_name);
     defer context.deinit();
 
     var swapchain = try Swapchain.init(allocator, context, window);
@@ -104,9 +120,6 @@ pub fn main() !void {
 
     var descriptor_builder = try DescriptorBuilder.init(allocator, &desc_layout_cache, &desc_allocator);
     defer descriptor_builder.deinit();
-
-    const uniform_buffers = try context.allocateUniformBuffers(UniformBufferData, swapchain.images.len);
-    defer context.freeUniformBuffers(uniform_buffers);
 
     const pipeline_layout = try context.createPipelineLayout(.{
         .flags = .{},
@@ -141,21 +154,32 @@ pub fn main() !void {
     try context.createFramebuffers(swapchain, render_pass, framebuffers);
     defer context.destroyFramebuffers(framebuffers);
 
-    // vertex buffer
-    const vertex_buffer = try context.createBufferGraphicsQueue(@sizeOf(Vertex) * mesh.vertices.len, .{ .vertex_buffer_bit = true, .transfer_dst_bit = true });
-    defer context.destroyBuffer(vertex_buffer);
-    const vertex_memory = try context.allocateBufferMemory(vertex_buffer, .gpu_only);
-    defer context.freeMemory(vertex_memory);
+    // begin buffers
+    const vertex_index_buffer_size = mesh_view.verticesSize() + mesh_view.indicesSize();
 
-    try vk_mem.immediateUpload(context, vertex_buffer, Vertex, &mesh.vertices);
+    const vertex_index_buffer = try context.createBufferGraphicsQueue(vertex_index_buffer_size, .{
+        .vertex_buffer_bit = true,
+        .index_buffer_bit = true,
+        .transfer_dst_bit = true,
+    });
+    defer context.destroyBuffer(vertex_index_buffer);
+    const vertex_index_buffer_memory = try context.allocateBufferMemory(vertex_index_buffer, .gpu_only);
+    defer context.freeMemory(vertex_index_buffer_memory);
 
-    // index buffer
-    const index_buffer = try context.createBufferGraphicsQueue(@sizeOf(u32) * mesh.indices.len, .{ .index_buffer_bit = true, .transfer_dst_bit = true });
-    defer context.destroyBuffer(index_buffer);
-    const index_memory = try context.allocateBufferMemory(index_buffer, .gpu_only);
-    defer context.freeMemory(index_memory);
+    try vk_mem.immediateUpload(context, Vertex, .{
+        .buffer = vertex_index_buffer,
+        .offset = 0,
+        .upload_data = mesh_view.vertices,
+    });
+    try vk_mem.immediateUpload(context, u32, .{
+        .buffer = vertex_index_buffer,
+        .offset = mesh_view.verticesSize(),
+        .upload_data = mesh_view.indices,
+    });
 
-    try vk_mem.immediateUpload(context, index_buffer, u16, &mesh.indices);
+    const uniform_buffers = try context.allocateUniformBuffers(UniformBufferData, swapchain.images.len);
+    defer context.freeUniformBuffers(uniform_buffers);
+    // end buffers
 
     // command pool
     const command_pool = try context.createCommandPool(.{}, context.graphics_queue.family);
@@ -169,11 +193,10 @@ pub fn main() !void {
             .framebuffer = framebuffers[swapchain.current_image_index],
             .pipeline = pipeline,
             .pipeline_layout = pipeline_layout,
-            .vertex_buffer = vertex_buffer,
             .extent = swapchain.extent,
             .uniform_buffer = uniform_buffers[swapchain.current_image_index],
-            .index_buffer = index_buffer,
             .descriptor_builder = &descriptor_builder,
+            .vertex_index_buffer = vertex_index_buffer,
         });
 
         const present_state = swapchain.submitPresentCommandBuffer(context, command_buffer) catch |err| switch (err) {
@@ -201,11 +224,10 @@ const RecordCommandsParams = struct {
     framebuffer: vk.Framebuffer,
     pipeline: vk.Pipeline,
     pipeline_layout: vk.PipelineLayout,
-    vertex_buffer: vk.Buffer,
-    index_buffer: vk.Buffer,
     extent: vk.Extent2D,
     uniform_buffer: vk_mem.AllocatedBuffer,
     descriptor_builder: *DescriptorBuilder,
+    vertex_index_buffer: vk.Buffer,
 };
 
 fn recordCommands(context: VkContext, command_buffer: vk.CommandBuffer, params: RecordCommandsParams) !void {
@@ -227,26 +249,28 @@ fn recordCommands(context: VkContext, command_buffer: vk.CommandBuffer, params: 
         .framebuffer = params.framebuffer,
     });
 
-    // map new uniform buffer data
-    const data: [*]UniformBufferData = try context.mapMemoryAligned(params.uniform_buffer.memory, vk.WHOLE_SIZE, UniformBufferData);
+    // bind pipeline
+    cmd.bindPipeline(params.pipeline, .graphics);
+
+    cmd.bindVertexBuffers(.{ .first_binding = 0, .vertex_buffers = &.{params.vertex_index_buffer}, .offsets = &.{0} });
+    const index_offset = @sizeOf(Vertex) * mesh.vertices.len;
+    cmd.bindIndexBuffer(params.vertex_index_buffer, index_offset, .uint32);
+
+    const cam_pos = m.init.vec3(0, 0, 2);
+    const view = m.init.translationMat4(cam_pos);
+    _ = view;
+
+    const data: [*]UniformBufferData = try context.mapMemoryAligned(.{
+        .memory = params.uniform_buffer.memory,
+        .size = vk.WHOLE_SIZE,
+        .offset = 0,
+    }, UniformBufferData);
     data[0] = UniformBufferData{
         .model = m.Mat4.identity(),
         .view = m.Mat4.identity(),
         .projection = m.Mat4.identity(),
     };
     context.unmapMemory(params.uniform_buffer.memory);
-
-    // bind pipeline
-    cmd.bindPipeline(params.pipeline, .graphics);
-
-    // bind meshes
-    cmd.bindVertexBuffers(.{ .first_binding = 0, .vertex_buffers = &.{params.vertex_buffer}, .offsets = &.{0} });
-    const index_buffer_offset = 0;
-    cmd.bindIndexBuffer(params.index_buffer, index_buffer_offset, .uint16);
-
-    const cam_pos = m.init.vec3(0, 0, 2);
-    const view = m.init.translationMat4(cam_pos);
-    _ = view;
 
     var uniform_buffer_builder = params.descriptor_builder.begin();
     try uniform_buffer_builder.bindBuffer(.{
