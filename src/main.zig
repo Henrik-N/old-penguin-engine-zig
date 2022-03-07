@@ -18,11 +18,16 @@ const DescriptorResource = vk_desc_sets.DescriptorResource;
 const m = @import("math.zig");
 
 const resources = @import("vk/resources/resources.zig");
-const view_resources = resources.view_resources;
-const shader_resources = resources.shader_resources;
 
-const Vertex = view_resources.Vertex;
-const VertexIndex = view_resources.VertexIndex;
+const Vertex = @import("vk/Vertex.zig");
+const VertexIndex = u32;
+const VertexIndexBuffer = resources.VertexIndexBuffer(Vertex, VertexIndex);
+
+const UniformBufferData = resources.UniformBufferData;
+const UniformBuffer = resources.UniformBuffer(UniformBufferData);
+
+const ShaderStorageBufferData = resources.ShaderStorageBufferData;
+const ShaderStorageBuffer = resources.ShaderStorageBuffer(ShaderStorageBufferData);
 
 const MeshView = struct {
     vertices: []const Vertex, // TODO slice of memory from bigger buffer
@@ -88,40 +93,29 @@ pub fn main() !void {
     var descriptor_resource = try DescriptorResource.init(allocator, &context);
     defer descriptor_resource.deinit();
 
-    // VIEW RESOURCES - BIND FREQUENCY: EVERY VIEW
+    // BUFFERS
     //
-    const vertex_index_buffer = try view_resources.initVertexIndexBuffer(context, mesh_view.vertices[0..], mesh_view.indices[0..]);
-    defer vertex_index_buffer.destroyFree(context);
+    const vertex_index_buffer = try VertexIndexBuffer.init(context, mesh_view.vertices[0..], mesh_view.indices[0..]);
+    defer vertex_index_buffer.deinit(context);
 
-    const uniform_buffer = try view_resources.initUniformBuffer(context, swapchain.images.len);
-    defer uniform_buffer.destroyFree(context);
+    const uniform_buffer = try UniformBuffer.init(allocator, context, &descriptor_resource, swapchain.images.len);
+    defer uniform_buffer.deinit(allocator, context);
 
-    const view_descriptor_sets = try allocator.alloc(vk.DescriptorSet, swapchain.images.len);
-    const view_descriptor_set_layout = try view_resources.initDescriptorSets(context, uniform_buffer.buffer, &descriptor_resource, view_descriptor_sets);
-    defer allocator.free(view_descriptor_sets);
+    const ssb = try ShaderStorageBuffer.init(allocator, context, &descriptor_resource, swapchain.images.len);
+    defer ssb.deinit(allocator, context);
 
-    // SHADER RESOURCES - BIND FREQUENCY: EVERY SHADER
-    //
-    const shader_storage_buffer = try shader_resources.initShaderStorageBuffer(context, swapchain.images.len);
-    defer shader_storage_buffer.destroyFree(context);
+    const draw_indirect_buffer = try resources.DrawIndexedIndirectCommandsBuffer.init(context, swapchain.images.len); // TODO frames count
+    defer draw_indirect_buffer.deinit(context);
 
-    const shader_descriptor_sets = try allocator.alloc(vk.DescriptorSet, swapchain.images.len);
-    const shader_descriptor_set_layout = try shader_resources.initDescriptorSets(context, shader_storage_buffer.buffer, &descriptor_resource, shader_descriptor_sets);
-    defer allocator.free(shader_descriptor_sets);
-
-    // DESCRIPTOR SETS
     const pipeline_layout = try context.createPipelineLayout(.{
         .flags = .{},
-        .set_layouts = &.{ view_descriptor_set_layout, shader_descriptor_set_layout },
+        .set_layouts = &.{ uniform_buffer.descriptor_layout, ssb.descriptor_layout },
         .push_constant_ranges = &.{},
     });
     defer context.destroyPipelineLayout(pipeline_layout);
 
-    const vert = try context.createShaderModule(shader_resources.shader_source.tri_vert);
-    defer context.destroyShaderModule(vert);
-
-    const frag = try context.createShaderModule(shader_resources.shader_source.tri_frag);
-    defer context.destroyShaderModule(frag);
+    const vert = try context.createShaderModule(resources.shader_source.tri_vert);
+    const frag = try context.createShaderModule(resources.shader_source.tri_frag);
 
     const pipeline = try vk_init.pipeline(context, .{
         .shader_modules = .{
@@ -138,33 +132,64 @@ pub fn main() !void {
     }, pipeline_layout, render_pass);
     defer context.destroyPipeline(pipeline);
 
+    context.destroyShaderModule(vert);
+    context.destroyShaderModule(frag);
+
     var framebuffers = try context.allocateFramebufferHandles(swapchain);
     defer context.freeFramebufferHandles(framebuffers);
     try context.createFramebuffers(swapchain, render_pass, framebuffers);
     defer context.destroyFramebuffers(framebuffers);
 
     while (!window.shouldClose()) {
+        // upload data
+        {
+            try uniform_buffer.updateMemory(context, UniformBufferData{
+                .model = m.Mat4.identity(),
+                .view = m.Mat4.identity(),
+                .projection = m.Mat4.identity(),
+            }, swapchain.current_image_index);
+
+            try ssb.updateMemory(context, ShaderStorageBufferData{
+                .some_data = m.Mat4.identity(),
+            }, swapchain.current_image_index);
+
+            try draw_indirect_buffer.updateMemory(context, vk.DrawIndexedIndirectCommand{
+                .index_count = mesh.indices.len,
+                .instance_count = 1,
+                .first_index = 0,
+                .vertex_offset = 0,
+                .first_instance = @intCast(u32, swapchain.current_image_index),
+            }, swapchain.current_image_index);
+        }
+
+        // upload render commands
         const command_buffer = try swapchain.newRenderCommandsBuffer(context);
+        {
+            const cmd = try context.beginRecordCommandBuffer(command_buffer, .{ .one_time_submit_bit = true });
 
-        try recordCommands(context, command_buffer, .{
-            .render_pass = render_pass,
-            .framebuffer = framebuffers[swapchain.current_image_index],
-            .pipeline = pipeline,
-            .pipeline_layout = pipeline_layout,
-            .extent = swapchain.extent,
-            .descriptor_resource = &descriptor_resource,
-            .current_image_index = swapchain.current_image_index,
-            .view_binding = .{
+            recordViewFrequencyCommands(cmd, .{
+                .viewport = vk_init.viewport(swapchain.extent),
+                .scissor = vk_init.scissor(swapchain.extent),
+                .pipeline = pipeline,
+                .pipeline_layout = pipeline_layout,
                 .vertex_index_buffer = vertex_index_buffer.buffer,
-                .uniform_buffer = uniform_buffer,
-                .descriptor_set = view_descriptor_sets[swapchain.current_image_index],
-            },
-            .shader_binding = .{
-                .shader_storage_buffer = shader_storage_buffer,
-                .descriptor_set = shader_descriptor_sets[swapchain.current_image_index],
-            },
-        });
+                .descriptor_sets = &.{
+                    uniform_buffer.getDescriptorSet(swapchain.current_image_index),
+                    ssb.getDescriptorSet(swapchain.current_image_index),
+                },
+            });
 
+            recordRenderPass(cmd, .{
+                .extent = swapchain.extent,
+                .render_pass = render_pass,
+                .framebuffer = framebuffers[swapchain.current_image_index],
+                .draw_indirect_commands_buffer = draw_indirect_buffer.buffer,
+            });
+
+            try cmd.end();
+        }
+
+        // submit render commands
         const present_state = swapchain.submitPresentCommandBuffer(context, command_buffer) catch |err| switch (err) {
             error.OutOfDateKHR => Swapchain.PresentState.suboptimal,
             else => return err, // unknown error
@@ -185,72 +210,50 @@ pub fn main() !void {
     try swapchain.waitForAllFences(context);
 }
 
-const RecordCommandsParams = struct {
-    render_pass: vk.RenderPass,
-    framebuffer: vk.Framebuffer,
+pub const RecordViewFrequencyCommands = struct {
+    viewport: vk.Viewport,
+    scissor: vk.Rect2D,
+
     pipeline: vk.Pipeline,
     pipeline_layout: vk.PipelineLayout,
-    extent: vk.Extent2D,
-    descriptor_resource: *DescriptorResource,
-    current_image_index: usize,
-    view_binding: struct {
-        vertex_index_buffer: vk.Buffer,
-        uniform_buffer: vk_mem.AllocatedBuffer,
-        descriptor_set: vk.DescriptorSet,
-    },
-    shader_binding: struct {
-        shader_storage_buffer: vk_mem.AllocatedBuffer,
-        descriptor_set: vk.DescriptorSet,
-    },
+
+    vertex_index_buffer: vk.Buffer,
+    descriptor_sets: []const vk.DescriptorSet,
 };
 
-fn recordCommands(context: VkContext, command_buffer: vk.CommandBuffer, params: RecordCommandsParams) !void {
-    const viewport = vk_init.viewport(params.extent);
-    const scissor = vk_init.scissor(params.extent);
+// commands will be run once per view
+fn recordViewFrequencyCommands(cmd: vk_cmd.CommandBufferRecorder, params: RecordViewFrequencyCommands) void {
+    cmd.setViewport(params.viewport);
+    cmd.setScissor(params.scissor);
 
-    const cmd = try context.beginRecordCommandBuffer(command_buffer, .{ .one_time_submit_bit = true });
+    const vertex_index_buffer = params.vertex_index_buffer;
 
-    cmd.setViewport(viewport);
-    cmd.setScissor(scissor);
-
-    cmd.bindVertexBuffers(.{ .first_binding = 0, .vertex_buffers = &.{params.view_binding.vertex_index_buffer}, .offsets = &.{0} });
-    const vertex_index_buffer_offset = @sizeOf(Vertex) * mesh.vertices.len;
-    cmd.bindIndexBuffer(params.view_binding.vertex_index_buffer, vertex_index_buffer_offset, .uint32);
-
-    cmd.bindPipeline(params.pipeline, .graphics);
-
-    // view resources
+    // every view
     {
-        const ub_data = view_resources.UniformBufferData{
-            .model = m.Mat4.identity(),
-            .view = m.Mat4.identity(),
-            .projection = m.Mat4.identity(),
-        };
+        cmd.bindVertexBuffers(.{ .first_binding = 0, .vertex_buffers = &.{vertex_index_buffer}, .offsets = &.{0} });
+        const index_buffer_offset = @sizeOf(Vertex) * mesh.vertices.len;
+        cmd.bindIndexBuffer(vertex_index_buffer, index_buffer_offset, .uint32);
 
-        try view_resources.updateViewResources(context, .{
-            .image_index = params.current_image_index,
-            .uniform_buffer_memory = params.view_binding.uniform_buffer.memory,
-            .data = &ub_data,
+        cmd.bindDescriptorSets(.{
+            .bind_point = .graphics,
+            .pipeline_layout = params.pipeline_layout,
+            .first_set = 0,
+            .descriptor_sets = params.descriptor_sets,
+            .dynamic_offsets = &.{},
         });
 
-        view_resources.bindViewResources(cmd, params.pipeline_layout, &.{params.view_binding.descriptor_set});
+        cmd.bindPipeline(params.pipeline, .graphics);
     }
-    // shader resources
-    {
-        const ssbo_data = shader_resources.ShaderStorageBufferData{
-            .some_data = m.Mat4.identity(),
-        };
+}
 
-        try shader_resources.updateShaderResources(context, .{
-            .image_index = params.current_image_index,
-            .storage_buffer_memory = params.shader_binding.shader_storage_buffer.memory,
-            .data = &ssbo_data,
-        });
+pub const RecordRenderPassParams = struct {
+    extent: vk.Extent2D,
+    render_pass: vk.RenderPass,
+    framebuffer: vk.Framebuffer,
+    draw_indirect_commands_buffer: vk.Buffer,
+};
 
-        shader_resources.bindShaderResources(cmd, params.pipeline_layout, &.{params.shader_binding.descriptor_set});
-    }
-
-    // render pass
+fn recordRenderPass(cmd: vk_cmd.CommandBufferRecorder, params: RecordRenderPassParams) void {
     cmd.beginRenderPass(.{
         .extent = params.extent,
         .clear_values = &.{
@@ -261,15 +264,12 @@ fn recordCommands(context: VkContext, command_buffer: vk.CommandBuffer, params: 
         .framebuffer = params.framebuffer,
     });
 
-    cmd.drawIndexed(.{
-        .index_count = mesh.indices.len,
-        .instance_count = 1,
-        .first_index = 0,
-        .vertex_offset = 0,
-        .first_instance = 0,
+    cmd.drawIndexedIndirect(.{
+        .buffer = params.draw_indirect_commands_buffer,
+        .offset = 0,
+        .draw_count = 1,
+        .stride = 0,
     });
 
     cmd.endRenderPass();
-
-    try cmd.end();
 }

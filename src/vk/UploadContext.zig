@@ -36,16 +36,10 @@ pub fn immediateSubmitBegin(self: Self, context: VkContext) !vk_cmd.CommandBuffe
     return try context.beginRecordCommandBuffer(self.command_buffer, .{ .one_time_submit_bit = true });
 }
 
-pub fn immediateSubmitBegin_old(self: Self, context: VkContext) !vk.CommandBuffer {
-    try vk_cmd.beginCommandBuffer(context, self.command_buffer, .{ .one_time_submit_bit = true });
-
-    return self.command_buffer;
-}
-
 pub fn immediateSubmitEnd(self: Self, context: VkContext) !void {
     const cmd_buf = self.command_buffer;
 
-    try vk_cmd.endCommandBuffer(context, cmd_buf);
+    try context.vkd.endCommandBuffer(cmd_buf);
 
     const submit_info = vk.SubmitInfo{
         .wait_semaphore_count = 0,

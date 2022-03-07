@@ -8,19 +8,6 @@ const mem = @import("std").mem;
 
 const vk_cmd = @This();
 
-pub fn beginCommandBuffer(context: VkContext, command_buffer: vk.CommandBuffer, usage: vk.CommandBufferUsageFlags) !void {
-    const cmd_buf_begin_info = vk.CommandBufferBeginInfo{
-        .flags = usage,
-        .p_inheritance_info = null,
-    };
-
-    try context.vkd.beginCommandBuffer(command_buffer, &cmd_buf_begin_info);
-}
-
-pub fn endCommandBuffer(context: VkContext, command_buffer: vk.CommandBuffer) !void {
-    try context.vkd.endCommandBuffer(command_buffer);
-}
-
 pub const CommandBufferRecorder = struct {
     context: *const VkContext,
     command_buffer: vk.CommandBuffer,
@@ -169,5 +156,16 @@ pub const CommandBufferRecorder = struct {
             @intCast(i32, params.vertex_offset),
             @intCast(u32, params.first_instance),
         );
+    }
+
+    pub const DrawIndexedIndirect = struct {
+        buffer: vk.Buffer,
+        offset: vk.DeviceSize,
+        draw_count: u32,
+        stride: u32,
+    };
+
+    pub fn drawIndexedIndirect(self: Self, params: DrawIndexedIndirect) void {
+        self.context.vkd.cmdDrawIndexedIndirect(self.command_buffer, params.buffer, params.offset, params.draw_count, params.stride);
     }
 };
