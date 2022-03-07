@@ -4,23 +4,17 @@ const vk = @import("vulkan");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
-const is_debug_mode: bool = builtin.mode == std.builtin.Mode.Debug;
+const vk_mem = @import("vk_memory.zig");
+const vk_cmd = @import("vk_cmd.zig");
+const zk = @import("zulkan.zig");
+const context_init = @import("vk_context_init.zig");
 
 const vk_dispatch = @import("vk_dispatch.zig");
-const BaseDispatch = vk_dispatch.BaseDispatch;
 const InstanceDispatch = vk_dispatch.InstanceDispatch;
 const DeviceDispatch = vk_dispatch.DeviceDispatch;
 
 const UploadContext = @import("UploadContext.zig");
 const Swapchain = @import("Swapchain.zig");
-
-const vk_init = @import("vk_init.zig");
-const vk_mem = @import("vk_memory.zig");
-const vk_cmd = @import("vk_cmd.zig");
-
-const zk = @import("zulkan.zig");
-
-const context_init = @import("vk_context_init.zig");
 
 const VkContext = @This();
 const Self = VkContext;
@@ -40,6 +34,10 @@ graphics_queue: DeviceQueue,
 present_queue: DeviceQueue,
 upload_context: UploadContext,
 //
+physical_device_limits: struct {
+    min_uniform_buffer_offset_alignment: usize,
+    min_storage_buffer_offset_alignment: usize,
+},
 
 pub const DeviceQueue = struct {
     handle: vk.Queue,
@@ -47,22 +45,34 @@ pub const DeviceQueue = struct {
 };
 
 pub const init = context_init.initVkContext;
+pub const deinit = context_init.deinitVkContext;
 
-pub fn deinit(self: VkContext) void {
-    self.upload_context.deinit(self);
+// writes with an offset into a uniform buffer must be properly aligned to the gpu's limits
+// therefore the memory allocated for each set of uniform buffer data you want to bind must be aligned as well
+pub fn padUniformBufferSize(self: Self, size: usize) usize {
+    const min_ubuffer_alignment = self.physical_device_limits.min_uniform_buffer_offset_alignment;
+    var aligned_size = size;
 
-    self.vkd.destroyDevice(self.device, null);
-    self.vki.destroySurfaceKHR(self.instance, self.surface, null);
-    if (self.debug_messenger) |debug_messenger| self.vki.destroyDebugUtilsMessengerEXT(self.instance, debug_messenger, null);
-    self.vki.destroyInstance(self.instance, null);
+    if (min_ubuffer_alignment > 0) {
+        aligned_size = (aligned_size + min_ubuffer_alignment - 1) & ~(min_ubuffer_alignment - 1);
+    }
+
+    return aligned_size;
 }
 
-pub fn immediateSubmitBegin(self: VkContext) !vk.CommandBuffer {
+pub fn padStorageBufferSize(self: Self, size: usize) usize {
+    const min_sbuffer_alignment = self.physical_device_limits.min_storage_buffer_offset_alignment;
+    var aligned_size = size;
+
+    if (min_sbuffer_alignment > 0) {
+        aligned_size = (aligned_size + min_sbuffer_alignment - 1) & ~(min_sbuffer_alignment - 1);
+    }
+
+    return aligned_size;
+}
+
+pub fn immediateSubmitBegin(self: VkContext) !vk_cmd.CommandBufferRecorder {
     return try self.upload_context.immediateSubmitBegin(self);
-}
-
-pub fn immediateSubmitEnd(self: VkContext) !void {
-    try self.upload_context.immediateSubmitEnd(self);
 }
 
 pub fn createShaderModule(self: Self, comptime shader_source: []const u8) !vk.ShaderModule {
@@ -453,4 +463,9 @@ pub fn destroyFramebuffers(self: Self, framebuffers: []const vk.Framebuffer) voi
 
 pub fn updateDescriptorSets(self: Self, descriptor_writes: []const vk.WriteDescriptorSet, descriptor_copies: []const vk.CopyDescriptorSet) !void {
     self.vkd.updateDescriptorSets(self.device, @intCast(u32, descriptor_writes.len), @ptrCast([*]const vk.WriteDescriptorSet, descriptor_writes.ptr), @intCast(u32, descriptor_copies.len), @ptrCast([*]const vk.CopyDescriptorSet, descriptor_copies.ptr));
+}
+
+pub fn resetDescriptorPool(self: Self, descriptor_pool: vk.DescriptorPool, flags: vk.DescriptorPoolResetFlags) void {
+    //self.vkd.disp
+    _ = self.vkd.dispatch.vkResetDescriptorPool(self.device, descriptor_pool, flags.toInt());
 }

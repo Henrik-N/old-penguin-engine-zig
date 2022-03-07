@@ -179,9 +179,10 @@ fn deinitExceptHandle(self: Swapchain, allocator: mem.Allocator, context: VkCont
 }
 
 pub fn newRenderCommandsBuffer(self: Swapchain, context: VkContext) !vk.CommandBuffer {
-    // return context.createcomm
     return context.allocateCommandBuffer(self.render_commands_pool, .primary);
 }
+
+const DescriptorResource = @import("vk_descriptor_sets.zig").DescriptorResource;
 
 pub fn submitPresentCommandBuffer(self: *Swapchain, context: VkContext, command_buffer: vk.CommandBuffer) !PresentState {
     const current_image: SwapImage = self.images[self.current_image_index];
@@ -191,7 +192,10 @@ pub fn submitPresentCommandBuffer(self: *Swapchain, context: VkContext, command_
     // free command buffer we just finished rendering to
     const just_used_command_buffer = self.render_command_buffers[self.current_image_index];
     context.freeCommandBuffer(self.render_commands_pool, just_used_command_buffer);
+
     self.render_command_buffers[self.current_image_index] = command_buffer;
+
+    //
 
     // Submit command buffer to graphics queue
     try self.submitPresent(context, command_buffer, current_image);
@@ -455,10 +459,12 @@ fn findPresentMode(context: VkContext, allocator: mem.Allocator) !vk.PresentMode
 
     for (preferred_present_modes) |preferred_mode| {
         if (std.mem.indexOfScalar(vk.PresentModeKHR, available_present_modes, preferred_mode) != null) {
+            std.log.info("selected present mode: {}", .{preferred_mode});
             return preferred_mode;
         }
     }
 
+    std.log.info("selected present mode: {}", .{vk.PresentModeKHR.fifo_khr});
     // First-in, first-out queue. Blocks and waits for more images once the queue is full. Guaranteed to be available, similar to v-sync.
     return .fifo_khr;
 }

@@ -88,7 +88,8 @@ pub fn immediateUpload(context: VkContext, comptime T: type, params: ImmediateUp
         }
     }
 
-    const cmd = try vk_cmd.CommandBufferRecorder.beginImmediateSubmit(context);
+    //const cmd = try vk_cmd.CommandBufferRecorder.beginImmediateSubmit(context);
+    const cmd = try context.immediateSubmitBegin();
 
     const copy_regions = [_]vk.BufferCopy{.{
         .src_offset = 0,

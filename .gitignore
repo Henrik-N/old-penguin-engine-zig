@@ -8,3 +8,5 @@ zig-out/
 /src/old
 .idea/
 .vscode/
+/shaders/temp/
+

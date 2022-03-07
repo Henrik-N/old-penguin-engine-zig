@@ -32,7 +32,11 @@ pub fn deinit(self: Self, context: VkContext) void {
     context.destroyCommandPool(self.command_pool);
 }
 
-pub fn immediateSubmitBegin(self: Self, context: VkContext) !vk.CommandBuffer {
+pub fn immediateSubmitBegin(self: Self, context: VkContext) !vk_cmd.CommandBufferRecorder {
+    return try context.beginRecordCommandBuffer(self.command_buffer, .{ .one_time_submit_bit = true });
+}
+
+pub fn immediateSubmitBegin_old(self: Self, context: VkContext) !vk.CommandBuffer {
     try vk_cmd.beginCommandBuffer(context, self.command_buffer, .{ .one_time_submit_bit = true });
 
     return self.command_buffer;

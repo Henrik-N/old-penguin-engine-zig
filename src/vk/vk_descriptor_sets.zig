@@ -7,6 +7,43 @@ const vk_init = @import("vk_init.zig");
 
 const Allocator = std.mem.Allocator;
 
+// NOTE: Not thread safe.
+pub const DescriptorResource = struct {
+    context: *const VkContext,
+    allocator: Allocator,
+    descriptor_layout_cache: DescriptorLayoutCache,
+    descriptor_allocator: DescriptorAllocator, // OLD
+
+    pub fn init(allocator: Allocator, context: *const VkContext) !DescriptorResource {
+        const desc_allocator = try DescriptorAllocator.init(allocator, context);
+        const desc_layout_cache = try DescriptorLayoutCache.init(allocator, context);
+
+        return DescriptorResource{
+            .allocator = allocator,
+            .context = context,
+            .descriptor_allocator = desc_allocator,
+            .descriptor_layout_cache = desc_layout_cache,
+        };
+    }
+
+    pub fn deinit(self: *DescriptorResource) void {
+        self.descriptor_allocator.deinit();
+        self.descriptor_layout_cache.deinit();
+    }
+
+    pub fn getDescriptorSetLayout(self: *DescriptorResource, create_info: zk.DescriptorSetLayoutCreateInfo) !vk.DescriptorSetLayout {
+        return try self.descriptor_layout_cache.createDescriptorSetLayout(create_info);
+    }
+
+    pub fn beginDescriptorSetBuilder(self: *DescriptorResource, comptime bindings_count: usize) !DescriptorBuilder(bindings_count) {
+        return try DescriptorBuilder(bindings_count).begin(self.context, &self.descriptor_layout_cache, &self.descriptor_allocator);
+    }
+
+    pub fn resetPools(self: *DescriptorResource) !void {
+        self.descriptor_allocator.resetPools();
+    }
+};
+
 const PoolEntry = struct {
     pool_type: vk.DescriptorType,
     multiplier: f32,
@@ -14,6 +51,7 @@ const PoolEntry = struct {
 
 const pool_multipliers = [_]PoolEntry{
     .{ .pool_type = .uniform_buffer, .multiplier = 2.0 },
+    .{ .pool_type = .storage_buffer, .multiplier = 2.0 },
 };
 
 fn descriptorPoolSizes(count: usize) [pool_multipliers.len]vk.DescriptorPoolSize {
@@ -56,9 +94,9 @@ const DescriptorPoolStorage = struct {
         self.free_pools.deinit();
     }
 
-    fn reset(self: *Self) void {
+    fn reset(self: *Self) !void {
         while (self.used_pools.popOrNull()) |used_pool| {
-            self.context.resetCommandPool(used_pool, .{});
+            self.context.resetDescriptorPool(used_pool, .{});
 
             try self.free_pools.append(used_pool);
         }
@@ -88,7 +126,7 @@ const DescriptorPoolStorage = struct {
     }
 };
 
-pub const DescriptorAllocator = struct {
+const DescriptorAllocator = struct {
     context: *const VkContext,
     current_pool: ?vk.DescriptorPool,
     pool_storage: DescriptorPoolStorage,
@@ -109,8 +147,9 @@ pub const DescriptorAllocator = struct {
         self.pool_storage.deinit();
     }
 
-    pub fn resetPools(self: Self) void {
-        self.pool_storage.reset();
+    pub fn resetPools(self: *Self) !void {
+        try self.pool_storage.reset();
+        self.current_pool = null;
     }
 
     pub fn allocateDescriptorSet(self: *Self, layout: vk.DescriptorSetLayout) !vk.DescriptorSet {
@@ -206,7 +245,7 @@ const DescriptorLayoutHashContext = struct {
     }
 };
 
-pub const DescriptorLayoutCache = struct {
+const DescriptorLayoutCache = struct {
     const CacheType = std.HashMap(DescriptorLayoutKey, vk.DescriptorSetLayout, DescriptorLayoutHashContext, std.hash_map.default_max_load_percentage);
 
     allocator: Allocator,
@@ -256,107 +295,103 @@ pub const DescriptorLayoutCache = struct {
     }
 };
 
-pub const DescriptorBuilder = struct {
-    layout_cache: *DescriptorLayoutCache,
-    descriptor_allocator: *DescriptorAllocator,
-    //
-    layout_bindings: std.ArrayList(vk.DescriptorSetLayoutBinding),
-    writes: std.ArrayList(vk.WriteDescriptorSet),
-
-    const expected_max_bindings_count = 10;
-
-    const Self = @This();
-
-    pub fn init(allocator: Allocator, layout_cache: *DescriptorLayoutCache, descriptor_allocator: *DescriptorAllocator) !Self {
-        return Self{
-            .layout_cache = layout_cache,
-            .descriptor_allocator = descriptor_allocator,
-            .layout_bindings = try std.ArrayList(vk.DescriptorSetLayoutBinding).initCapacity(allocator, expected_max_bindings_count),
-            .writes = try std.ArrayList(vk.WriteDescriptorSet).initCapacity(allocator, expected_max_bindings_count),
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.layout_bindings.clearAndFree();
-        self.writes.clearAndFree();
-    }
-
-    pub fn begin(self: *Self) *Self {
-        // invalidate bindings and writes from previous use
-        self.layout_bindings.clearRetainingCapacity();
-        self.writes.clearRetainingCapacity();
-
-        return self;
-    }
-
-    pub const BindBufferParams = struct {
-        binding: u32,
-        buffer_info: vk.DescriptorBufferInfo,
-        descriptor_type: vk.DescriptorType,
-        stage_flags: vk.ShaderStageFlags,
-    };
-
-    pub fn bindBuffer(self: *Self, params: BindBufferParams) !void {
-        const layout_binding = vk.DescriptorSetLayoutBinding{
-            .binding = params.binding,
-            .descriptor_type = params.descriptor_type,
-            .descriptor_count = 1,
-            .stage_flags = params.stage_flags,
-            .p_immutable_samplers = null,
-        };
-
-        try self.layout_bindings.append(layout_binding);
-
-        if (params.descriptor_type == .inline_uniform_block_ext) {
-            std.log.err(
-                \\"Dst_binding is the strating element in array if descriptor_type == vk.DescriptorType.inline_uniform_block_ext.
-                \\ If using this, descriptor_count specifies the number of bytes to update, and dst_array_element specifies the
-                \\ starting element in the array. This implementation currently has not implemented a way of setting the starting element.
-            , .{});
-            return error.NonImplementedDescriptorType;
-        }
-
-        const descriptor_write = vk.WriteDescriptorSet{
-            .dst_set = undefined, // set in build function
-            .dst_binding = params.binding,
-            .dst_array_element = 0,
-            .descriptor_count = 1,
-            .descriptor_type = params.descriptor_type,
-            .p_image_info = undefined,
-            .p_buffer_info = @ptrCast([*]const vk.DescriptorBufferInfo, &params.buffer_info),
-            .p_texel_buffer_view = undefined,
-        };
-
-        try self.writes.append(descriptor_write);
-    }
-
-    pub fn bindImageBuffer(binding: u32, image_info: vk.DescriptorImageInfo, descriptor_type: vk.DescriptorType, stage_flags: vk.ShaderStageFlags) !void {
-        _ = binding;
-        _ = image_info;
-        _ = descriptor_type;
-        _ = stage_flags;
-        return error.NotImplemented;
-    }
-
-    pub fn build(self: Self, context: VkContext, out_descriptor_set_layout: ?*vk.DescriptorSetLayout) !vk.DescriptorSet {
-        const descriptor_set_layout = try self.layout_cache.createDescriptorSetLayout(.{
-            .flags = .{},
-            .bindings = self.layout_bindings.items,
-        });
-
-        if (out_descriptor_set_layout) |out_layout| {
-            out_layout.* = descriptor_set_layout;
-        }
-
-        const descriptor_set = try self.descriptor_allocator.allocateDescriptorSet(descriptor_set_layout);
-
-        for (self.writes.items) |*write_set| {
-            write_set.dst_set = descriptor_set;
-        }
-
-        // set write data in the set
-        try context.updateDescriptorSets(self.writes.items, &.{});
-
-        return descriptor_set;
-    }
+pub const BindBufferInfo = struct {
+    binding: u32,
+    buffer_info: vk.DescriptorBufferInfo,
+    descriptor_type: vk.DescriptorType,
+    stage_flags: vk.ShaderStageFlags,
 };
+
+pub const DescriptorBindingInfo = union(enum) {
+    buffer_binding: BindBufferInfo,
+    image_binding: u8, // TODO
+};
+
+pub fn DescriptorBuilder(comptime bindings_count: usize) type {
+    return struct {
+        const Self = @This();
+
+        context: *const VkContext,
+
+        layout_cache: *DescriptorLayoutCache,
+        descriptor_allocator: *DescriptorAllocator,
+        //
+        layout_bindings: [bindings_count]vk.DescriptorSetLayoutBinding,
+        writes: [bindings_count]vk.WriteDescriptorSet,
+
+        pub fn begin(context: *const VkContext, layout_cache: *DescriptorLayoutCache, descriptor_allocator: *DescriptorAllocator) !Self {
+            const bindings: [bindings_count]vk.DescriptorSetLayoutBinding = undefined;
+            const writes: [bindings_count]vk.WriteDescriptorSet = undefined;
+
+            return Self{
+                .context = context,
+                .layout_cache = layout_cache,
+                .descriptor_allocator = descriptor_allocator,
+                .layout_bindings = bindings,
+                .writes = writes,
+            };
+        }
+
+        pub fn build(self: *Self, descriptor_binding_infos: [bindings_count]DescriptorBindingInfo, out_descriptor_set_layout: ?*vk.DescriptorSetLayout) !vk.DescriptorSet {
+            // bind descriptor
+            for (descriptor_binding_infos) |desc_binding_info, layout_bindings_index| {
+                try switch (desc_binding_info) {
+                    .buffer_binding => |bind_buffer_info| try self.addBufferBinding(bind_buffer_info, layout_bindings_index),
+                    .image_binding => error.DescriptorImageBindingsNotImplemented,
+                };
+            }
+
+            const descriptor_set_layout = try self.layout_cache.createDescriptorSetLayout(.{
+                .flags = .{},
+                .bindings = self.layout_bindings[0..],
+            });
+
+            if (out_descriptor_set_layout) |out_layout| {
+                out_layout.* = descriptor_set_layout;
+            }
+
+            const descriptor_set = try self.descriptor_allocator.allocateDescriptorSet(descriptor_set_layout);
+
+            for (self.writes) |*write_set| {
+                write_set.dst_set = descriptor_set;
+            }
+
+            // set write data in the set
+            try self.context.updateDescriptorSets(&self.writes, &.{});
+
+            return descriptor_set;
+        }
+
+        fn addBufferBinding(self: *Self, params: BindBufferInfo, layout_bindings_index: usize) !void {
+            const layout_binding = vk.DescriptorSetLayoutBinding{
+                .binding = params.binding,
+                .descriptor_type = params.descriptor_type,
+                .descriptor_count = 1,
+                .stage_flags = params.stage_flags,
+                .p_immutable_samplers = null,
+            };
+
+            self.layout_bindings[layout_bindings_index] = layout_binding;
+
+            if (params.descriptor_type == .inline_uniform_block_ext) {
+                std.log.err(
+                    \\"Dst_binding is the strating element in array if descriptor_type == vk.DescriptorType.inline_uniform_block_ext.
+                    \\ If using this, descriptor_count specifies the number of bytes to update, and dst_array_element specifies the
+                    \\ starting element in the array. This implementation currently has not implemented a way of setting the starting element.
+                , .{});
+                return error.NonImplementedDescriptorType;
+            }
+
+            self.writes[layout_bindings_index] = vk.WriteDescriptorSet{
+                .dst_set = undefined, // set in build function
+                .dst_binding = params.binding,
+                .dst_array_element = 0,
+                .descriptor_count = 1,
+                .descriptor_type = params.descriptor_type,
+                .p_image_info = undefined,
+                .p_buffer_info = @ptrCast([*]const vk.DescriptorBufferInfo, &params.buffer_info),
+                .p_texel_buffer_view = undefined,
+            };
+        }
+    };
+}

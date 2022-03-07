@@ -21,13 +21,11 @@ pub fn initVkContext(allocator: Allocator, window: glfw.Window, app_name: [*:0]c
     const base_dispatch = try BaseDispatch.load(vk_proc);
 
     const instance_layers = switch (is_debug_mode) {
-        true => [_][:0]const u8{"VK_LAYER_KHRONOS_validation"},
-        false => [_][:0]const u8{},
+        true => [_][*:0]const u8{ "VK_LAYER_KHRONOS_validation", "VK_LAYER_LUNARG_monitor" },
+        false => [_][*:0]const u8{},
     };
 
-    if (!try areLayersSupported(allocator, base_dispatch, instance_layers[0..])) {
-        return error.VkRequiredLayersNotSupported;
-    }
+    try ensureLayersSupported(allocator, base_dispatch, instance_layers[0..]);
 
     const platform_extensions: [][*:0]const u8 = try glfw.getRequiredInstanceExtensions();
     const debug_extensions = [_][*:0]const u8{vk.extension_info.ext_debug_utils.name};
@@ -50,6 +48,11 @@ pub fn initVkContext(allocator: Allocator, window: glfw.Window, app_name: [*:0]c
     const required_device_extensions = [_][*:0]const u8{vk.extension_info.khr_swapchain.name};
     const physical_device = try physical_device_selector.selectPhysicalDevice(instance, vki, surface, required_device_extensions[0..], allocator);
 
+    //const min_uniform_buffer_offset_alignment = vki.getPhysicalDeviceProperties(physical_device).limits.min_uniform_buffer_offset_alignment;
+    const pd_limits = vki.getPhysicalDeviceProperties(physical_device).limits;
+    const min_uniform_buffer_offset_alignment = pd_limits.min_uniform_buffer_offset_alignment;
+    const min_storage_buffer_offset_alignment = pd_limits.min_storage_buffer_offset_alignment;
+
     const queue_family_indices = try QueueFamilyIndices.find(allocator, vki, physical_device, surface);
 
     const device = try initDevice(vki, physical_device, required_device_extensions[0..], queue_family_indices);
@@ -70,6 +73,10 @@ pub fn initVkContext(allocator: Allocator, window: glfw.Window, app_name: [*:0]c
         .graphics_queue = graphics_queue,
         .present_queue = present_queue,
         .upload_context = undefined,
+        .physical_device_limits = .{
+            .min_uniform_buffer_offset_alignment = min_uniform_buffer_offset_alignment,
+            .min_storage_buffer_offset_alignment = min_storage_buffer_offset_alignment,
+        },
     };
 
     const upload_context = try UploadContext.init(self, graphics_queue);
@@ -78,7 +85,16 @@ pub fn initVkContext(allocator: Allocator, window: glfw.Window, app_name: [*:0]c
     return self;
 }
 
-pub fn areLayersSupported(allocator: Allocator, vkb: BaseDispatch, required_layers: []const []const u8) !bool {
+pub fn deinitVkContext(self: VkContext) void {
+    self.upload_context.deinit(self);
+
+    self.vkd.destroyDevice(self.device, null);
+    self.vki.destroySurfaceKHR(self.instance, self.surface, null);
+    if (self.debug_messenger) |debug_messenger| self.vki.destroyDebugUtilsMessengerEXT(self.instance, debug_messenger, null);
+    self.vki.destroyInstance(self.instance, null);
+}
+
+fn ensureLayersSupported(allocator: Allocator, vkb: BaseDispatch, required_layers: []const [*:0]const u8) !void {
     const available_layers = try vk_enumerate.enumerateInstanceLayerProperties(allocator, vkb);
     defer allocator.free(available_layers);
 
@@ -86,17 +102,22 @@ pub fn areLayersSupported(allocator: Allocator, vkb: BaseDispatch, required_laye
     for (required_layers) |required_layer| {
         for (available_layers) |available_layer| {
             const available_layer_slice: []const u8 = std.mem.span(@ptrCast([*:0]const u8, &available_layer.layer_name));
+            const required_layer_slice: []const u8 = std.mem.span(@ptrCast([*:0]const u8, required_layer));
 
-            if (std.mem.eql(u8, available_layer_slice, required_layer)) {
+            if (std.mem.eql(u8, available_layer_slice, required_layer_slice)) {
                 matches += 1;
             }
         }
     }
 
-    return matches == required_layers.len;
+    std.log.info("this one passed", .{});
+
+    if (matches != required_layers.len) {
+        return error.VkRequiredLayersNotSupported;
+    }
 }
 
-fn initInstance(vkb: BaseDispatch, app_name: [*:0]const u8, layers: []const [:0]const u8, extensions: []const [*:0]const u8) !vk.Instance {
+fn initInstance(vkb: BaseDispatch, app_name: [*:0]const u8, layers: []const [*:0]const u8, extensions: []const [*:0]const u8) !vk.Instance {
     const app_info = vk.ApplicationInfo{
         .p_application_name = app_name,
         .application_version = vk.makeApiVersion(0, 0, 0, 0),
@@ -314,7 +335,16 @@ fn initDevice(vki: InstanceDispatch, pd: vk.PhysicalDevice, device_extensions: [
         std.log.info("required device extensions: {s}", .{ext});
     }
 
+    // TODO ensure supported on the physical device
+    var vk11_features: vk.PhysicalDeviceVulkan11Features = vk.PhysicalDeviceVulkan11Features{ .shader_draw_parameters = vk.TRUE };
+
+    const features = vk.PhysicalDeviceFeatures2{
+        .p_next = &vk11_features,
+        .features = .{},
+    };
+
     const create_info = vk.DeviceCreateInfo{
+        .p_next = &features,
         .flags = .{},
         .queue_create_info_count = queue_count,
         .p_queue_create_infos = &queues_create_info,
@@ -322,7 +352,7 @@ fn initDevice(vki: InstanceDispatch, pd: vk.PhysicalDevice, device_extensions: [
         .pp_enabled_layer_names = undefined, // legacy
         .enabled_extension_count = @intCast(u32, device_extensions.len),
         .pp_enabled_extension_names = @ptrCast([*]const [*:0]const u8, device_extensions.ptr),
-        .p_enabled_features = null,
+        .p_enabled_features = null, //&features,
     };
 
     return try vki.createDevice(pd, &create_info, null);

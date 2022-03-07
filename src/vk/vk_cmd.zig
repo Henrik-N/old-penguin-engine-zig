@@ -41,15 +41,6 @@ pub const CommandBufferRecorder = struct {
         };
     }
 
-    pub fn beginImmediateSubmit(context: VkContext) !Self {
-        const command_buffer = try context.upload_context.immediateSubmitBegin(context);
-
-        return Self{
-            .context = &context,
-            .command_buffer = command_buffer,
-        };
-    }
-
     pub fn end(self: Self) !void {
         try self.context.vkd.endCommandBuffer(self.command_buffer);
     }
@@ -116,7 +107,13 @@ pub const CommandBufferRecorder = struct {
     };
 
     pub fn bindVertexBuffers(self: Self, params: BindVertexBuffersParams) void {
-        self.context.vkd.cmdBindVertexBuffers(self.command_buffer, params.first_binding, @intCast(u32, params.vertex_buffers.len), @ptrCast([*]const vk.Buffer, params.vertex_buffers.ptr), @ptrCast([*]const vk.DeviceSize, params.offsets.ptr));
+        self.context.vkd.cmdBindVertexBuffers(
+            self.command_buffer,
+            params.first_binding,
+            @intCast(u32, params.vertex_buffers.len),
+            @ptrCast([*]const vk.Buffer, params.vertex_buffers.ptr),
+            @ptrCast([*]const vk.DeviceSize, params.offsets.ptr),
+        );
     }
 
     pub fn bindIndexBuffer(self: Self, buffer: vk.Buffer, offset: vk.DeviceSize, index_type: vk.IndexType) void {
@@ -126,13 +123,22 @@ pub const CommandBufferRecorder = struct {
     pub const BindDescriptorSetsParams = struct {
         bind_point: vk.PipelineBindPoint,
         pipeline_layout: vk.PipelineLayout,
+        first_set: usize,
         descriptor_sets: []const vk.DescriptorSet,
         dynamic_offsets: []const u32,
     };
 
     pub fn bindDescriptorSets(self: Self, params: BindDescriptorSetsParams) void {
-        const first_set = 0;
-        self.context.vkd.cmdBindDescriptorSets(self.command_buffer, params.bind_point, params.pipeline_layout, first_set, @intCast(u32, params.descriptor_sets.len), @ptrCast([*]const vk.DescriptorSet, params.descriptor_sets.ptr), @intCast(u32, params.dynamic_offsets.len), @ptrCast([*]const u32, params.dynamic_offsets.ptr));
+        self.context.vkd.cmdBindDescriptorSets(
+            self.command_buffer,
+            params.bind_point,
+            params.pipeline_layout,
+            @intCast(u32, params.first_set),
+            @intCast(u32, params.descriptor_sets.len),
+            @ptrCast([*]const vk.DescriptorSet, params.descriptor_sets.ptr),
+            @intCast(u32, params.dynamic_offsets.len),
+            @ptrCast([*]const u32, params.dynamic_offsets.ptr),
+        );
     }
 
     pub const DrawParams = struct {
