@@ -2,7 +2,7 @@ const vk = @import("vulkan");
 const std = @import("std");
 const smath = std.math;
 
-// Thanks to https://github.com/cshenton/learnopengl/blob/master/src/glm.zig
+// Thanks to https://github.com/cshenton/learnopengl/blob/master/src/glm.zig for the inspiration.
 
 pub const Vec2 = Vector(2);
 pub const Vec3 = Vector(3);
@@ -12,36 +12,124 @@ pub const Mat2 = Matrix(2);
 pub const Mat3 = Matrix(3);
 pub const Mat4 = Matrix(4);
 
-pub const init = struct {
-    pub fn vec2(x: f32, y: f32) Vec2 {
-        return Vec2{ .values = .{ x, y } };
-    }
+pub const cos = smath.cos;
+pub const sin = smath.sin;
+pub const pi = smath.pi;
+pub const tau = smath.pi * 2.0;
 
-    pub fn vec3(x: f32, y: f32, z: f32) Vec3 {
-        return Vec3{ .values = .{ x, y, z } };
-    }
+pub fn vec2(x: f32, y: f32) Vec2 {
+    return Vec2{ .values = .{ x, y } };
+}
 
-    pub fn vec4(x: f32, y: f32, z: f32, w: f32) Vec4 {
-        return Vec4{ .values = .{ x, y, z, w } };
-    }
+pub fn vec3(x: f32, y: f32, z: f32) Vec3 {
+    return Vec3{ .values = .{ x, y, z } };
+}
 
-    pub fn translationMat4(translation: Vec3) Mat4 {
-        return Mat4{
-            .values = .{
-                .{ 1, 0, 0, 0 },
-                .{ 0, 1, 0, 0 },
-                .{ 0, 0, 1, 0 },
-                .{ translation.x(), translation.y(), translation.z(), 1 },
-            },
-        };
-    }
+pub fn vec4(x: f32, y: f32, z: f32, w: f32) Vec4 {
+    return Vec4{ .values = .{ x, y, z, w } };
+}
 
-    pub const PerspectiveProjectionMat4Params = struct {
-        fovy: f32, // radians
-        aspect_ratio: f32,
-        z_near: f32,
-        z_far: f32,
+pub fn translation(t: Vec3) Mat4 {
+    return Mat4{
+        .values = .{
+            .{ 1, 0, 0, 0 },
+            .{ 0, 1, 0, 0 },
+            .{ 0, 0, 1, 0 },
+            .{ t.x(), t.y(), t.z(), 1 },
+        },
     };
+}
+
+pub fn scale(s: Vec3) Mat4 {
+    return Mat4{
+        .values = .{
+            .{ s.x(), 0, 0, 0 },
+            .{ 0, s.y(), 0, 0 },
+            .{ 0, 0, s.z(), 0 },
+            .{ 0, 0, 0, 1 },
+        },
+    };
+}
+
+pub fn degs(rads_: f32) f32 {
+    return rads_ * (180.0 / pi);
+}
+
+pub fn rads(degs_: f32) f32 {
+    return degs_ * (pi / 180.0);
+}
+
+pub fn rotX(radians: f32) Mat4 {
+    return .{
+        .values = .{
+            .{ 1, 0, 0, 0 },
+            .{ 0, cos(radians), -sin(radians), 0 },
+            .{ 0, sin(radians), cos(radians), 0 },
+            .{ 0, 0, 0, 1 },
+        },
+    };
+}
+
+pub fn rotY(radians: f32) Mat4 {
+    return .{
+        .values = .{
+            .{ cos(radians), 0, sin(radians), 0 },
+            .{ 0, 1, 0, 0 },
+            .{ -sin(radians), 0, cos(radians), 0 },
+            .{ 0, 0, 0, 1 },
+        },
+    };
+}
+
+pub fn rotZ(radians: f32) Mat4 {
+    return .{
+        .values = .{
+            .{ cos(radians), -sin(radians), 0, 0 },
+            .{ sin(radians), cos(radians), 0, 0 },
+            .{ 0, 0, 1, 0 },
+            .{ 0, 0, 0, 1 },
+        },
+    };
+}
+
+// angle in radians
+pub fn rotAroundAxis(rangle: f32, axis: Vec3) Mat4 {
+    const axis_unit = axis.normalized();
+    const x = axis_unit.x();
+    const y = axis_unit.y();
+    const z = axis_unit.z();
+
+    const cos_a = cos(rangle);
+    const sin_a = sin(rangle);
+    const om_cos_a = (1 - cos_a);
+
+    const x0 = cos_a - (x * x * om_cos_a);
+    const y0 = (y * x * om_cos_a) + (z * sin_a);
+    const z0 = (z * x * om_cos_a) - (y * sin_a);
+
+    const x1 = (x * y * om_cos_a) - (z * sin_a);
+    const y1 = cos_a - (y * y * om_cos_a);
+    const z1 = (z * y * om_cos_a) + (x * sin_a);
+
+    const x2 = (x * z * om_cos_a) + (y * sin_a);
+    const y2 = (y * z * om_cos_a) - (x * sin_a);
+    const z2 = cos_a + z * z * om_cos_a;
+
+    return .{
+        .values = .{
+            .{ x0, y0, z0, 0 },
+            .{ x1, y1, z1, 0 },
+            .{ x2, y2, z2, 0 },
+            .{ 0, 0, 0, 1 },
+        },
+    };
+}
+
+pub const PerspectiveProjectionMat4Params = struct {
+    fovy: f32, // radians
+    aspect_ratio: f32,
+    z_near: f32,
+    z_far: f32,
 };
 
 fn Vector(comptime slot_count: usize) type {
@@ -49,6 +137,9 @@ fn Vector(comptime slot_count: usize) type {
         values: [slot_count]f32,
 
         const Self = @This();
+
+        pub const zero = Self.fill(0);
+        pub const one = Self.fill(1);
 
         pub fn fill(fill_value: f32) Self {
             var values: [slot_count]f32 = undefined;
@@ -61,14 +152,6 @@ fn Vector(comptime slot_count: usize) type {
             return Self{
                 .values = values,
             };
-        }
-
-        pub fn zero() Self {
-            return Self.fill(0);
-        }
-
-        pub fn one() Self {
-            return Self.fill(1);
         }
 
         fn simd(self: Self) @Vector(slot_count, f32) {

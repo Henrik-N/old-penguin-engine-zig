@@ -38,13 +38,90 @@ const MeshView = struct {
     }
 };
 
+// cube
+const cube_mesh = struct {
+    // vertex entry
+    fn ve(pos: [3]f32, color: [3]f32) Vertex {
+        return .{ .pos = pos, .color = color };
+    }
+
+    const red = [_]f32{ 1, 0, 0 };
+    const green = [_]f32{ 0, 1, 0 };
+    const blue = [_]f32{ 0, 0, 1 };
+    const white = [_]f32{ 1, 1, 1 };
+
+    const vertices = [_]Vertex{
+        // top
+        ve(.{ -1, 1, -1 }, red),
+        ve(.{ 1, 1, -1 }, green),
+        ve(.{ -1, 1, 1 }, blue),
+        ve(.{ 1, 1, 1 }, white),
+        // bottom
+        ve(.{ -1, -1, -1 }, red),
+        ve(.{ 1, -1, -1 }, green),
+        ve(.{ -1, -1, 1 }, blue),
+        ve(.{ 1, -1, 1 }, white),
+        // front
+        ve(.{ -1, 1, 1 }, red),
+        ve(.{ 1, 1, 1 }, green),
+        ve(.{ -1, -1, 1 }, blue),
+        ve(.{ 1, -1, 1 }, white),
+        // back
+        ve(.{ -1, 1, -1 }, red),
+        ve(.{ 1, 1, -1 }, green),
+        ve(.{ -1, -1, -1 }, blue),
+        ve(.{ 1, -1, -1 }, white),
+        // left
+        ve(.{ -1, 1, 1 }, red),
+        ve(.{ -1, 1, -1 }, green),
+        ve(.{ -1, -1, 1 }, blue),
+        ve(.{ -1, -1, -1 }, white),
+        // right
+        ve(.{ 1, 1, 1 }, red),
+        ve(.{ 1, 1, -1 }, green),
+        ve(.{ 1, -1, 1 }, blue),
+        ve(.{ 1, -1, -1 }, white),
+    };
+
+    fn side(a: VertexIndex, b: VertexIndex, c: VertexIndex) [3]VertexIndex {
+        return .{ a, b, c };
+    }
+
+    const indices = [_]VertexIndex{
+        //top
+        0,  1,  2,
+        //
+        2,  3,  1,
+        // bottom
+        4,  5,  6,
+        //
+        6,  7,  5,
+        // front
+        8,  9,  10,
+        //
+        10, 11, 9,
+        // back
+        12, 13, 14,
+        //
+        14, 15, 13,
+        // left
+        16, 17, 18,
+        //
+        18, 19, 17,
+        // right
+        20, 21, 22,
+        //
+        22, 23, 21,
+    };
+};
+
 // triangle
 const mesh = struct {
     const vertices = [_]Vertex{
-        .{ .pos = .{ -0.5, -0.5 }, .color = .{ 1, 0, 0 } },
-        .{ .pos = .{ 0.5, -0.5 }, .color = .{ 0, 1, 0 } },
-        .{ .pos = .{ 0.5, 0.5 }, .color = .{ 0, 0, 1 } },
-        .{ .pos = .{ -0.5, 0.5 }, .color = .{ 1, 1, 1 } },
+        .{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 1, 0, 0 } },
+        .{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 0, 1, 0 } },
+        .{ .pos = .{ 0.5, 0.5, 0.0 }, .color = .{ 0, 0, 1 } },
+        .{ .pos = .{ -0.5, 0.5, 0.0 }, .color = .{ 1, 1, 1 } },
     };
 
     const indices = [_]VertexIndex{ 0, 1, 2, 2, 3, 0 };
@@ -140,13 +217,24 @@ pub fn main() !void {
     try context.createFramebuffers(swapchain, render_pass, framebuffers);
     defer context.destroyFramebuffers(framebuffers);
 
+    var transform = m.Mat4.identity();
+    transform = transform.mul(m.translation(m.vec3(0.5, 0.0, 0.0)));
+    transform = transform.mul(m.scale(m.vec3(0.3, 0.3, 0.3)));
+
+    var frame_count: f32 = 30;
+
     while (!window.shouldClose()) {
-        // upload data
+        frame_count += 1.0;
+
+        // spin spin
+        transform = transform.mul(m.rotZ(frame_count));
+
         {
             try uniform_buffer.updateMemory(context, UniformBufferData{
-                .model = m.Mat4.identity(),
-                .view = m.Mat4.identity(),
-                .projection = m.Mat4.identity(),
+                .translation = transform,
+                // .model = m.Mat4.identity(),
+                // .view = m.Mat4.identity(),
+                // .projection = m.Mat4.identity(),
             }, swapchain.current_image_index);
 
             try ssb.updateMemory(context, ShaderStorageBufferData{

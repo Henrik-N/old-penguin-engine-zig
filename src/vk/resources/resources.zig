@@ -201,9 +201,11 @@ pub fn VertexIndexBuffer(comptime VertexType: type, comptime IndexType: type) ty
 }
 
 pub const UniformBufferData = packed struct {
-    model: m.Mat4,
-    view: m.Mat4,
-    projection: m.Mat4,
+    translation: m.Mat4,
+    //model: m.Mat4,
+    //view: m.Mat4,
+    //projection: m.Mat4,
+    //view_proj: m.Mat4,
 
     const Self = @This();
 
